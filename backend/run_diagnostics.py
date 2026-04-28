@@ -12,14 +12,16 @@ X = "\033[0m"
 
 def log(tag, msg, color=G):
     ts = time.strftime("%H:%M:%S")
+    # Replace any non-ASCII characters to prevent Windows console encoding issues
+    msg = str(msg).encode('ascii', 'replace').decode('ascii')
     print(f"{D}{ts}{X} {color}{B}[{tag}]{X} {msg}")
 
 
 def banner():
     print(f"""
-{C}{B}╔══════════════════════════════════════════════════════════╗
-║         JustHireMe  ·  Pipeline Diagnostics              ║
-╚══════════════════════════════════════════════════════════╝{X}
+{C}{B}+----------------------------------------------------------+
+|         JustHireMe  .  Pipeline Diagnostics              |
++----------------------------------------------------------+{X}
 """)
 
 
@@ -94,10 +96,11 @@ def run_scout(urls):
 
 
 def run_evaluator():
-    from db.client import get_discovered_leads, update_lead_score, get_setting
+    from db.client import get_discovered_leads, update_lead_score, get_setting, get_profile
     from agents.evaluator import score as _score
 
     discovered = get_discovered_leads()
+    profile = get_profile()
     provider = get_setting("llm_provider", "ollama")
     log("EVALUATOR", f"{len(discovered)} leads pending evaluation", Y)
     log("EVALUATOR", f"Routing to {B}{provider.upper()}{X}", M)
@@ -112,7 +115,7 @@ def run_evaluator():
         t0 = time.time()
         try:
             jd = f"{title} at {co} — {lead.get('url', '')}"
-            r = _score(jd, lead.get("skills", []))
+            r = _score(jd, profile)
             dt = round(time.time() - t0, 1)
 
             s = r["score"]
@@ -134,9 +137,9 @@ def run_evaluator():
 
 def summary(leads, results):
     print(f"""
-{C}{B}╔══════════════════════════════════════════════════════════╗
-║                    DIAGNOSTIC SUMMARY                    ║
-╚══════════════════════════════════════════════════════════╝{X}
+{C}{B}+----------------------------------------------------------+
+|                    DIAGNOSTIC SUMMARY                    |
++----------------------------------------------------------+{X}
 
   {G}Scout{X}     : {len(leads)} leads discovered
   {Y}Evaluator{X} : {len(results)} leads scored

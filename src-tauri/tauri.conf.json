@@ -33,10 +33,6 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": {
-      "resources/python-runtime/**/*": "resources/python-runtime",
-      "resources/bin/chromium/**/*": "resources/bin/chromium"
-    },
     "windows": {
       "wix": {
         "language": "en-US"

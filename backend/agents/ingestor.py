@@ -1,3 +1,4 @@
+import sys
 import hashlib
 import kuzu
 from db.client import vec
@@ -26,9 +27,10 @@ def _emb(texts: list[str]) -> list:
                 exc_holder[0] = e
         t = threading.Thread(target=_load, daemon=True)
         t.start()
-        t.join(timeout=15)
+        t.join(timeout=120)
         if t.is_alive() or exc_holder[0] or result[0] is None:
-            raise RuntimeError("SentenceTransformer load timed out or failed — skipping vectors")
+            print("[ingestor] SentenceTransformer load timed out or failed — skipping vectors for now", file=sys.stderr)
+            return None
         _st = result[0]
     return _st.encode(texts).tolist()
 
@@ -110,7 +112,8 @@ def _vectors(p: C):
         s_rows = [{"id": _h(sk.n), "n": sk.n, "cat": sk.cat} for sk in p.skills]
         if s_rows:
             vecs = _emb([r["n"] for r in s_rows])
-            _put_vec("skills", [{**r, "vector": v} for r, v in zip(s_rows, vecs)])
+            if vecs:
+                _put_vec("skills", [{**r, "vector": v} for r, v in zip(s_rows, vecs)])
 
         p_rows = [
             {"id": _h(pr.title), "title": pr.title, "stack": ",".join(pr.stack), "impact": pr.impact}
@@ -119,7 +122,8 @@ def _vectors(p: C):
         if p_rows:
             texts = [f"{r['title']} {r['stack']} {r['impact']}" for r in p_rows]
             vecs = _emb(texts)
-            _put_vec("projects", [{**r, "vector": v} for r, v in zip(p_rows, vecs)])
+            if vecs:
+                _put_vec("projects", [{**r, "vector": v} for r, v in zip(p_rows, vecs)])
     except Exception as exc:
         import traceback
         traceback.print_exc()
@@ -127,7 +131,6 @@ def _vectors(p: C):
 
 
 def _pdf(path: str) -> str:
-    import sys
     try:
         from pypdf import PdfReader
         pages = PdfReader(path).pages
@@ -235,7 +238,6 @@ def _parse_local(txt: str) -> C:
 
 
 def run(raw: str = "", pdf: str | None = None) -> C:
-    import sys
     from db.client import get_setting
     from llm import call_llm
 
@@ -256,18 +258,21 @@ def run(raw: str = "", pdf: str | None = None) -> C:
             "Use concise, factual descriptions.",
             txt,
             C,
+            step="ingestor",
         )
         print(f"[ingestor] LLM extraction OK via '{p}' — "
               f"{len(result.skills)} skills, {len(result.exp)} roles, {len(result.projects)} projects",
               file=sys.stderr)
         return result
     except Exception as exc:
+        if p in ("anthropic", "groq", "nvidia"):
+            print(f"[ingestor] LLM call failed ({p}): {exc}", file=sys.stderr)
+            raise RuntimeError(f"{p} extraction failed: {exc}") from exc
         print(f"[ingestor] LLM call failed ({p}): {exc} — falling back to local parser", file=sys.stderr)
         return _parse_local(txt)
 
 
 def ingest(raw: str = "", pdf: str | None = None) -> C:
-    import sys
     pdf_text = _pdf(pdf) if pdf else ""
     txt = (raw + " " + pdf_text).strip() if pdf_text else raw
     if not txt.strip():

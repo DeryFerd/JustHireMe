@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { motion, AnimatePresence } from "framer-motion";
 import SettingsModal from "./SettingsModal";
 import Icon from "./components/Icon";
@@ -9,11 +9,15 @@ import "./index.css";
 
 // Types
 type ConnSt = "disconnected" | "connecting" | "connected";
-type View = "dashboard" | "pipeline" | "graph" | "activity" | "profile";
+type View = "dashboard" | "pipeline" | "graph" | "activity" | "profile" | "ingestion";
+type PipelineTab = "found" | "evaluated" | "generated" | "applied" | "discarded";
 
 interface Lead {
   job_id: string; title: string; company: string;
   url: string; platform: string; status: string; asset: string;
+  score: number; reason: string; match_points: string[]; gaps?: string[];
+  description?: string;
+  events?: { action: string; ts: string }[];
 }
 interface GraphStats {
   candidate: number; skill: number; project: number;
@@ -23,30 +27,22 @@ interface LogLine {
   id: number; ts: string; msg: string; src: string;
   kind: "heartbeat" | "agent" | "system";
 }
-interface Overrides {
-  name: string; targetRole: string; email: string;
-  phone: string; linkedin: string; github: string;
-  location: string; summary: string;
-}
 
 // Helpers
 const getMark = (company: string) => company ? company.charAt(0).toUpperCase() : "?";
 const getTone = (status: string) => {
   switch (status) {
-    case "discovered": return "blue";
-    case "evaluating": return "yellow";
-    case "tailoring":  return "purple";
-    case "approved":   return "green";
-    case "applied":    return "orange";
+    case "discovered":   return "blue";
+    case "evaluating":   return "yellow";
+    case "tailoring":    return "purple";
+    case "approved":     return "green";
+    case "applied":      return "orange";
+    case "interviewing": return "pink";
+    case "rejected":     return "red";
+    case "accepted":     return "teal";
+    case "discarded":    return "red";
     default: return "blue";
   }
-};
-const getMatch = (id: string) => {
-  let hash = 0;
-  for (let i = 0; i < id.length; i++) {
-    hash = id.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  return 70 + (Math.abs(hash) % 26);
 };
 
 /* ══════════════════════════════════════
@@ -83,9 +79,9 @@ function useWS() {
             addLog(`Heartbeat #${d.beat} — uptime ${d.uptime_seconds.toFixed(0)}s`, "heartbeat", "hb");
         } else if (d.type === "agent") {
           addLog(d.msg ?? d.event, "agent", d.event ?? "agent");
-        }
-        if (d.type === "agent" && d.event === "eval_done") {
-          window.dispatchEvent(new CustomEvent("scan-done"));
+          if (d.event === "eval_done") window.dispatchEvent(new CustomEvent("scan-done"));
+        } else if (d.type === "LEAD_UPDATED" && d.data) {
+          window.dispatchEvent(new CustomEvent("lead-updated", { detail: d.data }));
         }
       } catch { /* ignore */ }
     };
@@ -102,17 +98,41 @@ function useWS() {
     return () => { unlisten?.(); wsRef.current?.close(); };
   }, [connect]);
 
-  return { conn, port, logs, beat };
+  return { conn, port, logs, beat, addLog };
 }
 
-function useLeads(port: number | null) {
+function useLeads(port: number | null, addLog?: (msg: string, kind: LogLine["kind"], src?: string) => void) {
   const [leads, setLeads] = useState<Lead[]>([]);
   useEffect(() => {
     if (!port) return;
     const load = () => fetch(`http://127.0.0.1:${port}/api/v1/leads`).then(r => r.json()).then(setLeads).catch(() => {});
-    load(); const t = setInterval(load, 5000); return () => clearInterval(t);
+    load();
+
+    // Keep leads fresh when backend broadcasts LEAD_UPDATED over WS
+    const onLeadUpdated = (e: Event) => {
+      const updated = (e as CustomEvent<Lead>).detail;
+      setLeads(prev => {
+        const idx = prev.findIndex(l => l.job_id === updated.job_id);
+        if (idx === -1) return [updated, ...prev];
+        const next = [...prev];
+        next[idx] = { ...next[idx], ...updated };
+        return next;
+      });
+    };
+    window.addEventListener("lead-updated", onLeadUpdated);
+
+    fetch(`http://127.0.0.1:${port}/api/v1/events?limit=200`)
+      .then(r => r.json())
+      .then((evts: {job_id: string; action: string; ts: string}[]) => {
+        evts.forEach(ev => {
+          addLog?.(`[${ev.job_id?.slice(0,8) ?? 'sys'}] ${ev.action}`, "agent", "history");
+        });
+      })
+      .catch(() => {});
+    const t = setInterval(load, 5000);
+    return () => { clearInterval(t); window.removeEventListener("lead-updated", onLeadUpdated); };
   }, [port]);
-  return leads;
+  return { leads, setLeads };
 }
 
 function useGraphStats(port: number | null) {
@@ -130,11 +150,12 @@ function useGraphStats(port: number | null) {
 ══════════════════════════════════════ */
 
 const NAV = [
-  { id: "dashboard", label: "Dashboard", icon: "home",   tone: "blue"   },
-  { id: "pipeline",  label: "Pipeline",  icon: "layers", tone: "purple" },
-  { id: "graph",     label: "Knowledge", icon: "graph",  tone: "green"  },
-  { id: "activity",  label: "Activity",  icon: "pulse",  tone: "orange" },
-  { id: "profile",   label: "Profile",   icon: "user",   tone: "pink"   },
+  { id: "dashboard", label: "Dashboard",     icon: "home",   tone: "blue"   },
+  { id: "pipeline",  label: "Job Pipeline",  icon: "layers", tone: "purple" },
+  { id: "graph",     label: "Knowledge",     icon: "graph",  tone: "green"  },
+  { id: "activity",  label: "Activity",      icon: "pulse",  tone: "orange" },
+  { id: "profile",   label: "Identity Graph",icon: "user",   tone: "pink"   },
+  { id: "ingestion", label: "Add Context",   icon: "plus",   tone: "teal"   },
 ];
 
 function Sidebar({ view, setView, leadCounts, online, port, beat, onSettings }: {
@@ -182,10 +203,12 @@ function Sidebar({ view, setView, leadCounts, online, port, beat, onSettings }: 
       <div className="eyebrow" style={{ padding: "16px 12px 4px 12px" }}>Status breakdown</div>
       <div className="col gap-1">
         {[
-          ["evaluating", "Evaluating", "yellow",  leadCounts.evaluating],
-          ["tailoring",  "Tailoring",  "purple",  leadCounts.tailoring],
-          ["approved",   "Approved",   "green",   leadCounts.approved],
-          ["applied",    "Applied",    "orange",  leadCounts.applied],
+          ["evaluating",   "Evaluating",   "yellow",  leadCounts.evaluating],
+          ["approved",     "Approved",     "green",   leadCounts.approved],
+          ["applied",      "Applied",      "orange",  leadCounts.applied],
+          ["interviewing", "Interviewing", "pink",    leadCounts.interviewing],
+          ["accepted",     "Accepted",     "teal",    leadCounts.accepted],
+          ["rejected",     "Rejected",     "red",     leadCounts.rejected],
         ].map(([k, label, tone, n]) => (
           <div key={k} className="row" style={{
             padding: "7px 12px", fontSize: 12, color: "var(--ink-2)", justifyContent: "space-between",
@@ -228,12 +251,13 @@ function Sidebar({ view, setView, leadCounts, online, port, beat, onSettings }: 
 ══════════════════════════════════════ */
 
 function Topbar({ view }: { view: View }) {
-  const titles = {
+  const titles: Record<View, string> = {
     dashboard: "Command Center",
     pipeline:  "Job Pipeline",
     graph:     "Knowledge Graph",
     activity:  "Live Activity",
-    profile:   "Candidate Profile",
+    profile:   "Identity Graph",
+    ingestion: "Add Context",
   };
   return (
     <header className="topbar">
@@ -251,7 +275,7 @@ function Topbar({ view }: { view: View }) {
    DASHBOARD VIEW
 ══════════════════════════════════════ */
 
-const StatCard = ({ tone, label, value, sub, icon, accent }: any) => (
+const StatCard = ({ tone, label, value, sub, icon }: any) => (
   <div style={{
     background: `var(--${tone}-soft)`,
     border: `1px solid var(--${tone})`,
@@ -259,19 +283,12 @@ const StatCard = ({ tone, label, value, sub, icon, accent }: any) => (
     display: "flex", flexDirection: "column", gap: 12,
     minHeight: 132,
   }}>
-    <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
-      <div style={{
-        width: 32, height: 32, borderRadius: 9,
-        background: `var(--${tone})`, color: `var(--${tone}-ink)`,
-        display: "grid", placeItems: "center",
-      }}>
-        <Icon name={icon} size={15} />
-      </div>
-      {accent && (
-        <div className="mono" style={{ fontSize: 10, fontWeight: 600, color: `var(--${tone}-ink)`, letterSpacing: "0.08em", textTransform: "uppercase" }}>
-          {accent}
-        </div>
-      )}
+    <div style={{
+      width: 32, height: 32, borderRadius: 9,
+      background: `var(--${tone})`, color: `var(--${tone}-ink)`,
+      display: "grid", placeItems: "center",
+    }}>
+      <Icon name={icon} size={15} />
     </div>
     <div className="col" style={{ gap: 4 }}>
       <div className="display tabular" style={{ fontSize: 40, color: `var(--${tone}-ink)`, lineHeight: 1 }}>{value}</div>
@@ -281,38 +298,19 @@ const StatCard = ({ tone, label, value, sub, icon, accent }: any) => (
   </div>
 );
 
-const SparkBar = ({ data, tone }: { data: number[]; tone: string }) => {
-  const max = Math.max(...data, 1);
-  return (
-    <div className="row" style={{ gap: 3, alignItems: "flex-end", height: 44 }}>
-      {data.map((v, i) => (
-        <div key={i} style={{
-          flex: 1,
-          height: `${(v/max)*100}%`,
-          minHeight: 3,
-          background: `var(--${tone}-ink)`,
-          opacity: 0.4 + (v/max) * 0.6,
-          borderRadius: 2,
-        }} />
-      ))}
-    </div>
-  );
-};
-
-function DashboardView({ leads, logs, setView, openDrawer, scanning, onScan, scanErr }: {
+function DashboardView({ leads, logs, setView, openDrawer, scanning, onScan, onStopScan, scanErr }: {
   leads: Lead[]; logs: LogLine[]; setView: (v: View) => void; openDrawer: (l: Lead) => void;
-  scanning: boolean; onScan: () => void; scanErr: string | null;
+  scanning: boolean; onScan: () => void; onStopScan: () => void; scanErr: string | null;
 }) {
   const counts = {
     total:      leads.length,
     discovered: leads.filter(l=>l.status==="discovered").length,
-    evaluating: leads.filter(l=>l.status==="evaluating").length,
+    evaluated:  leads.filter(l=>l.score > 0).length,
     tailoring:  leads.filter(l=>l.status==="tailoring").length,
     approved:   leads.filter(l=>l.status==="approved").length,
     applied:    leads.filter(l=>l.status==="applied").length,
   };
-  const recent = leads.slice(0, 4);
-  const approvedQueue = leads.filter(l => l.status === "approved" || l.status === "tailoring").slice(0, 3);
+  const topMatches = [...leads].filter(l => l.score > 0).sort((a,b) => b.score - a.score).slice(0, 4);
 
   return (
     <div className="scroll" style={{ padding: 24, flex: 1, height: "100%", minHeight: 0 }}>
@@ -322,7 +320,7 @@ function DashboardView({ leads, logs, setView, openDrawer, scanning, onScan, sca
             <span className="eyebrow">Agent Online</span>
             <h1 style={{ fontSize: 52 }}>The hunt is <span className="italic-serif" style={{ color: "var(--ink-2)" }}>on.</span></h1>
             <div style={{ fontSize: 14.5, color: "var(--ink-2)", lineHeight: 1.55, maxWidth: 480 }}>
-              Your agents reviewed <b>{leads.length} leads</b>, tailored <b>{counts.tailoring + counts.approved} resumes</b>, and queued <b>{counts.approved} applications</b>.
+              Scanned <b>{leads.length} leads</b>, evaluated <b>{counts.evaluated}</b> with scores, tailored <b>{counts.tailoring + counts.approved} resumes</b>.
             </div>
             <div className="row gap-2" style={{ marginTop: 6 }}>
               <button onClick={onScan} disabled={scanning} style={{
@@ -330,25 +328,33 @@ function DashboardView({ leads, logs, setView, openDrawer, scanning, onScan, sca
                 letterSpacing: "0.12em", textTransform: "uppercase", cursor: scanning ? "wait" : "pointer",
                 background: scanning ? "var(--ink-4)" : "var(--ink)",
                 color: "var(--paper)", border: "1px solid var(--ink-3)",
-                boxShadow: scanning ? "none" : "0 0 20px rgba(201,100,66,0.25), 0 0 60px rgba(201,100,66,0.08)",
                 transition: "all .2s ease", display: "flex", alignItems: "center", gap: 8,
               }}>
                 {scanning ? <><span className="dot pulse-soft" /> SCAN IN PROGRESS...</> : <><Icon name="spark" size={13} /> INITIATE AUTONOMOUS SCAN</>}
               </button>
+              {scanning && (
+                <button onClick={onStopScan} style={{
+                  padding: "10px 18px", borderRadius: 12, fontSize: 12, fontWeight: 700,
+                  letterSpacing: "0.12em", textTransform: "uppercase", cursor: "pointer",
+                  background: "var(--bad-soft)", color: "var(--bad)", border: "1px solid var(--bad)",
+                  transition: "all .2s ease", display: "flex", alignItems: "center", gap: 7,
+                }}>
+                  <Icon name="x" size={13} color="var(--bad)" /> STOP SCAN
+                </button>
+              )}
               <button className="btn btn-accent" onClick={() => setView("pipeline")}>Open pipeline <Icon name="arrow-right" size={13} /></button>
               <button className="btn" onClick={() => setView("activity")}><Icon name="pulse" size={13} /> Live activity</button>
             </div>
             {scanErr && <div style={{ marginTop: 6, fontSize: 12, color: "var(--bad)", fontWeight: 500 }}>⚠ {scanErr}</div>}
           </div>
-          <div className="col gap-2" style={{ width: 320 }}>
-            <div className="eyebrow" style={{ marginBottom: 2 }}>Awaiting your approval</div>
-            {approvedQueue.length === 0 ? (
-              <div className="card-flat" style={{ padding: 14, fontSize: 12, color: "var(--ink-3)" }}>Queue is clear.</div>
-            ) : approvedQueue.map(l => (
+          <div className="col gap-2" style={{ width: 300 }}>
+            <div className="eyebrow" style={{ marginBottom: 2 }}>Top matches awaiting review</div>
+            {topMatches.length === 0 ? (
+              <div className="card-flat" style={{ padding: 14, fontSize: 12, color: "var(--ink-3)" }}>Run a scan to find matches.</div>
+            ) : topMatches.map(l => (
               <div key={l.job_id} onClick={() => openDrawer(l)} className="lift" style={{
                 background: "var(--card)", border: "1px solid var(--line)", borderRadius: 12,
-                padding: 10, cursor: "pointer",
-                display: "flex", alignItems: "center", gap: 10,
+                padding: 10, cursor: "pointer", display: "flex", alignItems: "center", gap: 10,
               }}>
                 <div style={{
                   width: 32, height: 32, borderRadius: 10,
@@ -358,10 +364,14 @@ function DashboardView({ leads, logs, setView, openDrawer, scanning, onScan, sca
                   border: `1px solid var(--${getTone(l.status)}-ink)`,
                 }}>{getMark(l.company)}</div>
                 <div className="col" style={{ flex: 1, minWidth: 0, gap: 1 }}>
-                  <div style={{ fontSize: 12.5, fontWeight: 600, lineHeight: 1.2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.title}</div>
-                  <div className="mono" style={{ fontSize: 10, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: "0.08em" }}>{l.company} · {getMatch(l.job_id)}% match</div>
+                  <div style={{ fontSize: 12.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.title}</div>
+                  <div className="mono" style={{ fontSize: 10, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: "0.08em" }}>{l.company}</div>
                 </div>
-                <Icon name="arrow-right" size={14} color="var(--ink-3)" />
+                <span style={{
+                  fontSize: 12, fontWeight: 700, padding: "2px 8px", borderRadius: 999,
+                  background: l.score >= 85 ? "var(--green)" : l.score >= 50 ? "var(--yellow)" : "var(--bad-soft)",
+                  color: l.score >= 85 ? "var(--green-ink)" : l.score >= 50 ? "var(--yellow-ink)" : "var(--bad)",
+                }}>{l.score}%</span>
               </div>
             ))}
           </div>
@@ -369,81 +379,25 @@ function DashboardView({ leads, logs, setView, openDrawer, scanning, onScan, sca
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 14, marginBottom: 18 }}>
-        <StatCard tone="blue"   label="Leads discovered" value={leads.length}      sub="Total leads"   icon="layers" />
-        <StatCard tone="yellow" label="Evaluating now"   value={counts.evaluating} sub="In agent loop" icon="spark" />
-        <StatCard tone="purple" label="Resumes tailored" value={counts.tailoring}  sub="PDFs cached"   icon="file" />
-        <StatCard tone="green"  label="Awaiting approval" value={counts.approved}  sub="Ready to fire" icon="check" />
-        <StatCard tone="orange" label="Applications sent" value={counts.applied}   sub="Success"       icon="arrow-up" />
-      </div>
-
-      <div className="grid-2" style={{ marginBottom: 18 }}>
-        <div className="card" style={{ padding: 20, background: "var(--teal-soft)" }}>
-          <div className="row" style={{ justifyContent: "space-between", marginBottom: 18 }}>
-            <div>
-              <h3>Application velocity</h3>
-              <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)", letterSpacing: "0.1em", textTransform: "uppercase", marginTop: 3 }}>Real-time stream</div>
-            </div>
-          </div>
-          <div className="row gap-4" style={{ alignItems: "flex-end", justifyContent: "space-between" }}>
-            <div className="col gap-1">
-              <div className="display tabular" style={{ fontSize: 44, color: "var(--teal-ink)" }}>{counts.applied}</div>
-              <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)", letterSpacing: "0.1em", textTransform: "uppercase" }}>apps sent</div>
-            </div>
-            <div style={{ flex: 1, maxWidth: 320 }}>
-              <SparkBar data={[3,5,4,7,6,8,5,9,11,8,12,10,14,counts.applied]} tone="teal" />
-            </div>
-          </div>
-        </div>
-
-        <div className="card" style={{ padding: 20, background: "var(--pink-soft)" }}>
-          <div className="row" style={{ justifyContent: "space-between", marginBottom: 14 }}>
-            <div>
-              <h3>Top matches</h3>
-              <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)", letterSpacing: "0.1em", textTransform: "uppercase", marginTop: 3 }}>by graph similarity</div>
-            </div>
-            <button className="btn btn-icon"><Icon name="trending" size={14} /></button>
-          </div>
-          <div className="col gap-2">
-            {recent.map(l => (
-              <div key={l.job_id} className="row gap-3" style={{
-                padding: 10, background: "var(--card)", border: "1px solid var(--line)", borderRadius: 10,
-              }}>
-                <div style={{
-                  width: 32, height: 32, borderRadius: 10,
-                  background: `var(--${getTone(l.status)})`, color: `var(--${getTone(l.status)}-ink)`,
-                  display: "grid", placeItems: "center",
-                  fontFamily: "var(--font-display)", fontSize: 16, fontWeight: 500,
-                  border: `1px solid var(--${getTone(l.status)}-ink)`,
-                }}>{getMark(l.company)}</div>
-                <div className="col" style={{ flex: 1, minWidth: 0, gap: 1 }}>
-                  <div style={{ fontSize: 12.5, fontWeight: 600 }}>{l.title}</div>
-                  <div className="mono" style={{ fontSize: 10, color: "var(--ink-3)", letterSpacing: "0.08em", textTransform: "uppercase" }}>{l.company} · {l.platform}</div>
-                </div>
-                <div className="display tabular" style={{ fontSize: 18, color: `var(--${getTone(l.status)}-ink)` }}>{getMatch(l.job_id)}<span style={{ fontSize: 11, opacity: 0.6 }}>%</span></div>
-              </div>
-            ))}
-          </div>
-        </div>
+        <StatCard tone="blue"   label="Leads found"      value={counts.discovered} sub="Awaiting eval"   icon="layers" />
+        <StatCard tone="yellow" label="Evaluated"         value={counts.evaluated}  sub="Non-zero scores" icon="spark"  />
+        <StatCard tone="purple" label="Resumes tailored"  value={counts.tailoring}  sub="PDFs cached"     icon="file"   />
+        <StatCard tone="green"  label="Awaiting approval" value={counts.approved}   sub="Ready to fire"   icon="check"  />
+        <StatCard tone="orange" label="Applications sent" value={counts.applied}    sub="Success"         icon="arrow-up" />
       </div>
 
       <div className="card" style={{ padding: 18, background: "var(--yellow-soft)" }}>
         <div className="row" style={{ justifyContent: "space-between", marginBottom: 12 }}>
-          <div className="row gap-2">
-            <div style={{ width: 26, height: 26, borderRadius: 7, background: "var(--yellow)", color: "var(--yellow-ink)", display: "grid", placeItems: "center" }}>
-              <Icon name="clock" size={13} />
-            </div>
-            <h3>Recent agent events</h3>
-          </div>
+          <h3>Recent agent events</h3>
           <button className="btn btn-ghost" onClick={() => setView("activity")} style={{ fontSize: 12 }}>See all <Icon name="arrow-right" size={12} /></button>
         </div>
         <div className="col gap-1" style={{ fontSize: 12 }}>
-          {logs.slice(0, 5).map((ln, i) => {
+          {logs.slice(0, 6).map((ln, i) => {
             const tone = ln.kind === "heartbeat" ? "blue" : ln.kind === "agent" ? "green" : "yellow";
             return (
               <div key={ln.id} className="row gap-3" style={{ padding: "7px 10px", borderRadius: 8, background: i === 0 ? "var(--card)" : "transparent" }}>
                 <span className="mono tabular" style={{ fontSize: 10, color: "var(--ink-3)", minWidth: 50 }}>{ln.ts}</span>
                 <span className="mono" style={{ fontSize: 9.5, fontWeight: 600, padding: "1px 6px", borderRadius: 3, background: `var(--${tone})`, color: `var(--${tone}-ink)`, textTransform: "uppercase", letterSpacing: "0.08em" }}>{ln.kind}</span>
-                <span className="mono" style={{ fontSize: 11, color: "var(--ink-3)" }}>{ln.src}</span>
                 <span style={{ fontSize: 12, flex: 1, color: "var(--ink-2)" }}>{ln.msg}</span>
               </div>
             );
@@ -455,184 +409,314 @@ function DashboardView({ leads, logs, setView, openDrawer, scanning, onScan, sca
 }
 
 /* ══════════════════════════════════════
-   PIPELINE VIEW
+   JOB CARD (shared across tabs)
 ══════════════════════════════════════ */
 
-function PipelineView({ leads, logs, stats, openDrawer, scanning, onScan }: {
-  leads: Lead[]; logs: LogLine[]; stats: GraphStats; openDrawer: (l: Lead) => void;
-  scanning: boolean; onScan: () => void;
+function JobCard({ lead, onOpen, onDelete, showScore = false, showGenerate = false, port }: {
+  lead: Lead;
+  onOpen: (l: Lead) => void;
+  onDelete: (id: string) => void;
+  showScore?: boolean;
+  showGenerate?: boolean;
+  port?: number | null;
 }) {
-  const [filter, setFilter] = useState("all");
-  const [activeId, setActiveId] = useState<string | null>(null);
-  const filtered = filter === "all" ? leads : leads.filter(l => l.status === filter);
+  const [generating, setGenerating] = useState(false);
+  const desc = lead.description?.trim();
 
-  const filters = [
-    { id: "all",        label: "All",        n: leads.length },
-    { id: "evaluating", label: "Evaluating", n: leads.filter(l=>l.status==="evaluating").length },
-    { id: "tailoring",  label: "Tailoring",  n: leads.filter(l=>l.status==="tailoring").length },
-    { id: "approved",   label: "Approved",   n: leads.filter(l=>l.status==="approved").length },
-    { id: "applied",    label: "Applied",    n: leads.filter(l=>l.status==="applied").length },
-  ];
-
-  const mappedStats = [
-    { key: "JobLead",    count: stats.joblead ?? 0,    tone: "blue" },
-    { key: "Candidate",  count: stats.candidate ?? 0,  tone: "purple" },
-    { key: "Skill",      count: stats.skill ?? 0,      tone: "orange" },
-    { key: "Experience", count: stats.experience ?? 0, tone: "green" },
-    { key: "Project",    count: stats.project ?? 0,    tone: "pink" },
-  ];
+  const handleGenerate = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!port) return;
+    setGenerating(true);
+    await fetch(`http://127.0.0.1:${port}/api/v1/leads/${lead.job_id}/generate`, { method: "POST" });
+    setTimeout(() => setGenerating(false), 2000);
+  };
 
   return (
-    <div className="grid-3" style={{ padding: 24, height: "100%", overflowX: "auto" }}>
-      {/* COL 1 — Discovery feed */}
-      <div className="card" style={{ display: "flex", flexDirection: "column", overflow: "hidden", background: "var(--blue-soft)" }}>
-        <div style={{ padding: "16px 18px 12px", borderBottom: "1px solid var(--line)" }}>
-          <div className="row" style={{ justifyContent: "space-between", marginBottom: 8 }}>
-            <div className="row gap-2">
-              <div style={{ width: 26, height: 26, borderRadius: 7, background: "var(--blue)", color: "var(--blue-ink)", display: "grid", placeItems: "center" }}>
-                <Icon name="layers" size={14} />
-              </div>
-              <div>
-                <h3>Discovery</h3>
-                <div className="mono" style={{ fontSize: 10, color: "var(--ink-3)", letterSpacing: "0.12em", textTransform: "uppercase" }}>{filtered.length} leads</div>
-              </div>
-            </div>
-            <button onClick={onScan} disabled={scanning} className="mono" style={{
-              padding: "5px 12px", borderRadius: 8, fontSize: 9.5, fontWeight: 700,
-              letterSpacing: "0.1em", textTransform: "uppercase", cursor: scanning ? "wait" : "pointer",
-              background: scanning ? "var(--ink-4)" : "var(--ink)",
-              color: "var(--paper)", border: "1px solid var(--ink-3)",
-              boxShadow: scanning ? "none" : "0 0 12px rgba(201,100,66,0.2)",
-              transition: "all .2s ease", display: "flex", alignItems: "center", gap: 5,
-            }}>
-              {scanning ? <><span className="dot pulse-soft" /> Scanning...</> : <><Icon name="spark" size={11} /> Scan</>}
-            </button>
+    <div className="card lift" style={{
+      padding: 16, cursor: "pointer", border: "1px solid var(--line)",
+      background: "var(--card)", display: "flex", flexDirection: "column", gap: 10,
+    }} onClick={() => onOpen(lead)}>
+      {/* Header row */}
+      <div className="row gap-3" style={{ alignItems: "flex-start" }}>
+        <div style={{
+          width: 36, height: 36, borderRadius: 10, flexShrink: 0,
+          background: `var(--${getTone(lead.status)})`, color: `var(--${getTone(lead.status)}-ink)`,
+          display: "grid", placeItems: "center",
+          fontFamily: "var(--font-display)", fontSize: 17, fontWeight: 500,
+          border: `1px solid var(--${getTone(lead.status)}-ink)`,
+        }}>{getMark(lead.company)}</div>
+        <div className="col" style={{ flex: 1, minWidth: 0, gap: 2 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 600, lineHeight: 1.25, color: "var(--ink)" }}>{lead.title}</div>
+          <div className="row gap-2" style={{ alignItems: "center" }}>
+            <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: "0.08em" }}>{lead.company}</span>
+            <span style={{ color: "var(--ink-4)", fontSize: 10 }}>·</span>
+            <span className="pill mono" style={{ fontSize: 8.5, padding: "1px 6px" }}>{lead.platform}</span>
           </div>
-          <div className="row gap-1" style={{ flexWrap: "wrap" }}>
-            {filters.map(f => (
-              <button key={f.id} onClick={() => setFilter(f.id)} className="mono" style={{
-                padding: "4px 9px", borderRadius: 7, fontSize: 10, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase",
-                border: "1px solid " + (filter === f.id ? "var(--ink)" : "var(--line)"),
-                background: filter === f.id ? "var(--ink)" : "var(--card)",
-                color: filter === f.id ? "var(--paper)" : "var(--ink-2)",
-                cursor: "pointer",
-              }}>{f.label}<span style={{ marginLeft: 5, opacity: 0.6 }}>{f.n}</span></button>
+        </div>
+        {/* Score badge */}
+        {showScore && lead.score > 0 && (
+          <span style={{
+            flexShrink: 0, fontSize: 12, fontWeight: 700, padding: "3px 10px", borderRadius: 999,
+            background: lead.score >= 85 ? "var(--green)" : lead.score >= 50 ? "var(--yellow)" : "var(--bad-soft)",
+            color:      lead.score >= 85 ? "var(--green-ink)" : lead.score >= 50 ? "var(--yellow-ink)" : "var(--bad)",
+          }}>{lead.score}%</span>
+        )}
+        {/* Delete button */}
+        <button
+          onClick={e => { e.stopPropagation(); onDelete(lead.job_id); }}
+          title="Remove"
+          style={{
+            flexShrink: 0, width: 26, height: 26, borderRadius: 7,
+            border: "1px solid var(--line)", background: "var(--paper)",
+            color: "var(--bad)", cursor: "pointer",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: 14, lineHeight: 1, padding: 0, opacity: 0.7,
+            transition: "opacity 0.15s",
+          }}
+          onMouseEnter={e => (e.currentTarget.style.opacity = "1")}
+          onMouseLeave={e => (e.currentTarget.style.opacity = "0.7")}
+        >×</button>
+      </div>
+
+      {/* Description */}
+      {desc ? (
+        <div style={{
+          fontSize: 12.5, color: "var(--ink-2)", lineHeight: 1.55,
+          display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical",
+          overflow: "hidden",
+          background: "var(--paper-3)", borderRadius: 8, padding: "8px 10px",
+          border: "1px solid var(--line)",
+        }}>{desc}</div>
+      ) : (
+        <div style={{ fontSize: 11.5, color: "var(--ink-4)", fontStyle: "italic" }}>No description extracted.</div>
+      )}
+
+      {/* Evaluator reason (for Evaluated tab) */}
+      {showScore && lead.reason && (
+        <div style={{ fontSize: 11.5, color: "var(--ink-3)", lineHeight: 1.5, borderLeft: "2px solid var(--line)", paddingLeft: 8 }}>
+          {lead.reason.slice(0, 160)}{lead.reason.length > 160 ? "…" : ""}
+        </div>
+      )}
+
+      {/* Footer */}
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "center", marginTop: 2 }}>
+        <button
+          onClick={e => { e.stopPropagation(); openUrl(lead.url); }}
+          title={lead.url}
+          style={{ fontSize: 11, color: "var(--teal)", background: "none", border: "none", padding: 0, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, maxWidth: "60%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+        >
+          <Icon name="external-link" size={11} color="var(--teal)" />
+          {lead.url.replace(/^https?:\/\//, "").slice(0, 50)}
+        </button>
+        <div className="row gap-2">
+          {showGenerate && (
+            <button
+              onClick={handleGenerate}
+              disabled={generating}
+              style={{
+                padding: "4px 10px", borderRadius: 7, fontSize: 11, fontWeight: 600,
+                border: "1px solid var(--purple)", background: "var(--purple-soft)",
+                color: "var(--purple-ink)", cursor: generating ? "wait" : "pointer",
+              }}
+            >{generating ? "Queued…" : "Generate PDF"}</button>
+          )}
+          <button
+            onClick={e => { e.stopPropagation(); onOpen(lead); }}
+            style={{
+              padding: "4px 10px", borderRadius: 7, fontSize: 11, fontWeight: 600,
+              border: "1px solid var(--line)", background: "var(--paper)",
+              color: "var(--ink-2)", cursor: "pointer",
+            }}
+          >Details →</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════
+   PIPELINE VIEW (tabbed)
+══════════════════════════════════════ */
+
+function PipelineView({ leads, openDrawer, deleteLead, port }: {
+  leads: Lead[]; openDrawer: (l: Lead) => void;
+  deleteLead: (id: string) => void; port: number | null;
+}) {
+  const [tab, setTab] = useState<PipelineTab>("found");
+  const [search, setSearch] = useState("");
+  const [bulkSelecting, setBulkSelecting] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  const q = search.toLowerCase();
+  const filter = (arr: Lead[]) =>
+    q ? arr.filter(l =>
+      l.title.toLowerCase().includes(q) ||
+      l.company.toLowerCase().includes(q) ||
+      (l.description || "").toLowerCase().includes(q)
+    ) : arr;
+
+  const tabs: { id: PipelineTab; label: string; tone: string; leads: Lead[] }[] = [
+    {
+      id: "found",
+      label: "Found",
+      tone: "blue",
+      leads: filter(leads.filter(l => l.status === "discovered")),
+    },
+    {
+      id: "evaluated",
+      label: "Evaluated",
+      tone: "yellow",
+      leads: filter([...leads.filter(l => l.score > 0)].sort((a, b) => b.score - a.score)),
+    },
+    {
+      id: "generated",
+      label: "Generated",
+      tone: "purple",
+      leads: filter(leads.filter(l => l.status === "tailoring" || l.status === "approved")),
+    },
+    {
+      id: "applied",
+      label: "Active",
+      tone: "orange",
+      leads: filter(leads.filter(l => ["applied", "interviewing", "accepted", "rejected"].includes(l.status))),
+    },
+    {
+      id: "discarded",
+      label: "Discarded",
+      tone: "red",
+      leads: filter(leads.filter(l => l.status === "discarded" && l.score === 0)),
+    },
+  ];
+
+  const activeTab = tabs.find(t => t.id === tab)!;
+
+  const toggleSelect = (id: string) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const bulkDelete = async () => {
+    if (!window.confirm(`Delete ${selected.size} leads?`)) return;
+    for (const id of selected) await deleteLead(id);
+    setSelected(new Set());
+    setBulkSelecting(false);
+  };
+
+  return (
+    <div className="col" style={{ flex: 1, height: "100%", minHeight: 0, overflow: "hidden" }}>
+      {/* Tab bar + search */}
+      <div style={{
+        padding: "14px 20px 0", borderBottom: "1px solid var(--line)",
+        background: "var(--paper)", flexShrink: 0,
+        display: "flex", flexDirection: "column", gap: 12,
+      }}>
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+          <div className="row gap-1">
+            {tabs.map(t => (
+              <button
+                key={t.id}
+                onClick={() => { setTab(t.id); setBulkSelecting(false); setSelected(new Set()); }}
+                style={{
+                  padding: "7px 14px", borderRadius: "10px 10px 0 0", fontSize: 12, fontWeight: 700,
+                  letterSpacing: "0.06em", textTransform: "uppercase", cursor: "pointer",
+                  border: "1px solid var(--line)", borderBottom: tab === t.id ? "1px solid var(--paper)" : "1px solid var(--line)",
+                  background: tab === t.id ? "var(--paper)" : "var(--paper-3)",
+                  color: tab === t.id ? `var(--${t.tone}-ink)` : "var(--ink-3)",
+                  marginBottom: tab === t.id ? -1 : 0,
+                  display: "flex", alignItems: "center", gap: 6,
+                }}
+              >
+                {t.label}
+                <span style={{
+                  fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 999,
+                  background: tab === t.id ? `var(--${t.tone})` : "var(--paper-3)",
+                  color: tab === t.id ? `var(--${t.tone}-ink)` : "var(--ink-4)",
+                }}>{t.leads.length}</span>
+              </button>
             ))}
           </div>
-        </div>
-        <div className="scroll col gap-2" style={{ padding: 12, flex: 1, minHeight: 0 }}>
-          {filtered.map(l => (
-            <div key={l.job_id} className="lift" onClick={() => { setActiveId(l.job_id); if (l.status === "approved" || l.status === "tailoring") openDrawer(l); }} style={{
-              background: activeId === l.job_id ? `var(--${getTone(l.status)}-soft)` : "var(--card)",
-              border: `1px solid ${activeId === l.job_id ? `var(--${getTone(l.status)}-ink)` : "var(--line)"}`,
-              borderRadius: 14, padding: 14, cursor: "pointer",
-              boxShadow: activeId === l.job_id ? "var(--shadow-md)" : "var(--shadow-xs)",
-            }}>
-              <div className="row gap-3" style={{ alignItems: "flex-start" }}>
-                <div style={{
-                  width: 36, height: 36, borderRadius: 10,
-                  background: `var(--${getTone(l.status)})`, color: `var(--${getTone(l.status)}-ink)`,
-                  display: "grid", placeItems: "center",
-                  fontFamily: "var(--font-display)", fontSize: 18, fontWeight: 500,
-                  border: `1px solid var(--${getTone(l.status)}-ink)`,
-                }}>{getMark(l.company)}</div>
-                <div className="col gap-1" style={{ flex: 1, minWidth: 0 }}>
-                  <div className="row" style={{ justifyContent: "space-between", gap: 8 }}>
-                    <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: "0.1em" }}>{l.company}</div>
-                  </div>
-                  <div style={{ fontSize: 14, fontWeight: 600, lineHeight: 1.25, letterSpacing: "-0.01em" }}>{l.title}</div>
-                  <div className="row gap-2 mono" style={{ fontSize: 10.5, color: "var(--ink-3)", marginTop: 2 }}>
-                    <span>{l.platform}</span>
-                  </div>
-                </div>
-              </div>
-              <div className="row" style={{ justifyContent: "space-between", marginTop: 12, alignItems: "center" }}>
-                <span className="pill mono" style={{ background: `var(--${getTone(l.status)})`, color: `var(--${getTone(l.status)}-ink)`, fontSize: 9.5, letterSpacing: "0.1em", textTransform: "uppercase", fontWeight: 600 }}>
-                  <span className="dot" />{l.status}
-                </span>
-                <div className="row gap-2">
-                  <div className="mono tabular" style={{ fontSize: 11, fontWeight: 600, color: "var(--ink-2)" }}>
-                    {getMatch(l.job_id)}<span style={{ color: "var(--ink-3)", fontWeight: 400 }}>%</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
 
-      {/* COL 2 — Agent Thoughts */}
-      <div className="card" style={{ display: "flex", flexDirection: "column", overflow: "hidden", background: "var(--purple-soft)" }}>
-        <div style={{ padding: "16px 18px 14px", borderBottom: "1px solid var(--line)" }}>
-          <div className="row" style={{ justifyContent: "space-between" }}>
-            <div className="row gap-2">
-              <div style={{ width: 26, height: 26, borderRadius: 7, background: "var(--purple)", color: "var(--purple-ink)", display: "grid", placeItems: "center" }}>
-                <Icon name="pulse" size={14} />
-              </div>
-              <div>
-                <h3>Agent Thoughts</h3>
-                <div className="mono" style={{ fontSize: 10, color: "var(--ink-3)", letterSpacing: "0.12em", textTransform: "uppercase" }}>LangGraph · live</div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div style={{ padding: 14, flex: 1, minHeight: 0, display: "flex" }}>
-          <div className="scroll terminal" style={{
-            background: "#1F1A14", borderRadius: 12, padding: "14px 16px", flex: 1, minHeight: 0, color: "#EFE7D6",
-          }}>
-            {logs.map((ln) => {
-              const tone = ln.kind === "heartbeat" ? "blue" : ln.kind === "agent" ? "green" : "yellow";
-              return (
-                <div key={ln.id} className="row gap-3" style={{ marginBottom: 5, alignItems: "baseline" }}>
-                  <span className="mono tabular" style={{ color: "#7A6F62", fontSize: 10.5, minWidth: 50 }}>{ln.ts}</span>
-                  <span className="mono" style={{ fontSize: 9.5, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.08em", padding: "1px 6px", borderRadius: 4, background: `var(--${tone})`, color: `var(--${tone}-ink)`, minWidth: 42, textAlign: "center" }}>{ln.kind}</span>
-                  <span style={{ color: "#B5AC9D", fontSize: 11 }}>{ln.src}</span>
-                  <span style={{ flex: 1 }}>{ln.msg}</span>
-                </div>
-              );
-            })}
-            <div className="row gap-2" style={{ marginTop: 4 }}>
-              <span style={{ color: "var(--accent)" }}>›</span>
-              <span className="blink">▌</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* COL 3 — Knowledge graph */}
-      <div className="card" style={{ display: "flex", flexDirection: "column", overflow: "hidden", background: "var(--green-soft)" }}>
-        <div style={{ padding: "16px 18px 12px", borderBottom: "1px solid var(--line)" }}>
           <div className="row gap-2">
-            <div style={{ width: 26, height: 26, borderRadius: 7, background: "var(--green)", color: "var(--green-ink)", display: "grid", placeItems: "center" }}>
-              <Icon name="graph" size={14} />
-            </div>
-            <div>
-              <h3>Knowledge graph</h3>
-              <div className="mono" style={{ fontSize: 10, color: "var(--ink-3)", letterSpacing: "0.12em", textTransform: "uppercase" }}>kùzu · local</div>
-            </div>
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search title, company, description…"
+              style={{
+                padding: "6px 12px", borderRadius: 8, border: "1px solid var(--line)",
+                background: "var(--paper-3)", fontSize: 12, color: "var(--ink)",
+                width: 240, outline: "none",
+              }}
+            />
+            {tab === "discarded" && (
+              bulkSelecting ? (
+                <div className="row gap-2">
+                  <button onClick={bulkDelete} disabled={selected.size === 0}
+                    style={{ padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: 700, background: "var(--bad)", color: "#fff", border: "none", cursor: "pointer" }}>
+                    Delete {selected.size} selected
+                  </button>
+                  <button onClick={() => { setBulkSelecting(false); setSelected(new Set()); }}
+                    style={{ padding: "6px 12px", borderRadius: 8, fontSize: 12, border: "1px solid var(--line)", background: "var(--paper)", cursor: "pointer", color: "var(--ink-2)" }}>
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button onClick={() => setBulkSelecting(true)}
+                  style={{ padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: 600, border: "1px solid var(--bad)", background: "var(--bad-soft)", color: "var(--bad)", cursor: "pointer" }}>
+                  Bulk delete
+                </button>
+              )
+            )}
           </div>
         </div>
-        <div className="scroll" style={{ padding: 14, flex: 1, minHeight: 0 }}>
-          <div className="card-flat" style={{ padding: 14, marginBottom: 12, display: "flex", justifyContent: "center" }}>
-            <PentagonGraph stats={mappedStats} />
+      </div>
+
+      {/* Content */}
+      <div className="scroll" style={{ flex: 1, padding: 20, minHeight: 0 }}>
+        {activeTab.leads.length === 0 ? (
+          <div style={{
+            padding: "64px 24px", textAlign: "center",
+            border: "1px dashed var(--line)", borderRadius: 16,
+            color: "var(--ink-4)", fontSize: 13,
+          }}>
+            {search ? `No results for "${search}"` : `No ${activeTab.label.toLowerCase()} jobs yet.`}
           </div>
-          <div className="col gap-2">
-            {mappedStats.map(s => (
-              <div key={s.key} className="row" style={{
-                justifyContent: "space-between", alignItems: "center",
-                padding: "10px 12px", borderRadius: 10,
-                background: `var(--${s.tone}-soft)`,
-                border: `1px solid var(--${s.tone})`,
-              }}>
-                <div className="row gap-2">
-                  <span style={{ width: 8, height: 8, borderRadius: 2, background: `var(--${s.tone}-ink)` }} />
-                  <span style={{ fontSize: 12, fontWeight: 500, color: `var(--${s.tone}-ink)` }}>{s.key}</span>
-                </div>
-                <span className="display tabular" style={{ fontSize: 22, color: `var(--${s.tone}-ink)` }}>{s.count}</span>
+        ) : (
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(380px, 1fr))",
+            gap: 14,
+          }}>
+            {activeTab.leads.map(lead => (
+              <div key={lead.job_id} style={{ position: "relative" }}>
+                {bulkSelecting && tab === "discarded" && (
+                  <div
+                    onClick={() => toggleSelect(lead.job_id)}
+                    style={{
+                      position: "absolute", top: 10, left: 10, zIndex: 5,
+                      width: 18, height: 18, borderRadius: 5,
+                      border: `2px solid ${selected.has(lead.job_id) ? "var(--bad)" : "var(--line)"}`,
+                      background: selected.has(lead.job_id) ? "var(--bad)" : "var(--paper)",
+                      cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                    }}
+                  >
+                    {selected.has(lead.job_id) && <span style={{ color: "#fff", fontSize: 11, lineHeight: 1 }}>✓</span>}
+                  </div>
+                )}
+                <JobCard
+                  lead={lead}
+                  onOpen={openDrawer}
+                  onDelete={deleteLead}
+                  showScore={tab === "evaluated" || tab === "generated" || tab === "applied"}
+                  showGenerate={tab === "evaluated"}
+                  port={port}
+                />
               </div>
             ))}
           </div>
-        </div>
+        )}
       </div>
     </div>
   );
@@ -702,7 +786,6 @@ function GraphView({ stats }: { stats: GraphStats }) {
     { key: "Project",    count: stats.project ?? 0,    tone: "pink" },
   ];
   const total = mappedStats.reduce((s, x) => s + x.count, 0);
-
   return (
     <div className="scroll" style={{ padding: 24, flex: 1, height: "100%", minHeight: 0 }}>
       <div className="card" style={{ padding: "26px 28px", marginBottom: 18, background: "var(--green-soft)" }}>
@@ -720,9 +803,8 @@ function GraphView({ stats }: { stats: GraphStats }) {
           </div>
         </div>
       </div>
-
       <div className="grid-2" style={{ marginBottom: 18 }}>
-        <div className="card" style={{ padding: 24, background: "var(--card)", display: "flex", flexDirection: "column", alignItems: "center" }}>
+        <div className="card" style={{ padding: 24, display: "flex", flexDirection: "column", alignItems: "center" }}>
           <div style={{ width: "100%" }}>
             <h3 style={{ marginBottom: 4 }}>Topology</h3>
             <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 12 }}>5-vertex schema</div>
@@ -731,23 +813,11 @@ function GraphView({ stats }: { stats: GraphStats }) {
         </div>
         <div className="col gap-2">
           {mappedStats.map(s => (
-            <div key={s.key} style={{
-              padding: 18, borderRadius: 14,
-              background: `var(--${s.tone}-soft)`,
-              border: `1px solid var(--${s.tone})`,
-            }}>
+            <div key={s.key} style={{ padding: 18, borderRadius: 14, background: `var(--${s.tone}-soft)`, border: `1px solid var(--${s.tone})` }}>
               <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
                 <div className="col gap-1">
                   <span className="eyebrow" style={{ color: `var(--${s.tone}-ink)` }}>{s.key}</span>
-                  <div style={{ fontSize: 13, color: "var(--ink-2)" }}>
-                    {{
-                      Candidate:  "You — the root node",
-                      Experience: "Roles & companies",
-                      Project:    "Things you've built",
-                      Skill:      "Capabilities & tooling",
-                      JobLead:    "Discovered openings",
-                    }[s.key]}
-                  </div>
+                  <div style={{ fontSize: 13, color: "var(--ink-2)" }}>{{ Candidate: "You — the root node", Experience: "Roles & companies", Project: "Things you've built", Skill: "Capabilities & tooling", JobLead: "Discovered openings" }[s.key]}</div>
                 </div>
                 <div className="display tabular" style={{ fontSize: 36, color: `var(--${s.tone}-ink)` }}>{s.count}</div>
               </div>
@@ -764,20 +834,27 @@ function GraphView({ stats }: { stats: GraphStats }) {
 ══════════════════════════════════════ */
 
 function ActivityView({ logs }: { logs: LogLine[] }) {
+  const [actTab, setActTab] = useState<"all"|"scout"|"eval"|"apply"|"system">("all");
   return (
     <div className="scroll" style={{ padding: 24, flex: 1, height: "100%", minHeight: 0 }}>
-      <div className="card" style={{ padding: "26px 28px", marginBottom: 18, background: "var(--orange-soft)" }}>
-        <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 16 }}>
-          <div className="col gap-2" style={{ maxWidth: 540 }}>
-            <span className="eyebrow">Real-time stream</span>
-            <h1 style={{ fontSize: 44 }}>What is the agent <span className="italic-serif">thinking?</span></h1>
-            <div style={{ fontSize: 13.5, color: "var(--ink-2)", lineHeight: 1.55 }}>
-              Every step the LangGraph orchestrator takes lands here as a structured event.
-            </div>
-          </div>
-        </div>
+      <div style={{display:"flex", gap:6, marginBottom:16, flexWrap:"wrap"}}>
+        {(["all","scout","eval","apply","system"] as const).map(tab => (
+          <button key={tab} onClick={() => setActTab(tab)} style={{
+            padding:"5px 14px", borderRadius:999, fontSize:11, fontWeight:700,
+            letterSpacing:"0.1em", textTransform:"uppercase", cursor:"pointer",
+            border: actTab === tab ? "none" : "1px solid var(--line)",
+            background: actTab === tab ? "var(--ink)" : "var(--paper)",
+            color: actTab === tab ? "var(--card)" : "var(--ink-3)",
+            transition:"all 0.15s ease",
+          }}>
+            {tab === "all" ? "All" : tab === "scout" ? "Scout" : tab === "eval" ? "Eval" : tab === "apply" ? "Apply" : "System"}
+          </button>
+        ))}
       </div>
-
+      <div className="card" style={{ padding: "26px 28px", marginBottom: 18, background: "var(--orange-soft)" }}>
+        <span className="eyebrow">Real-time stream</span>
+        <h1 style={{ fontSize: 44 }}>What is the agent <span className="italic-serif">thinking?</span></h1>
+      </div>
       <div className="card" style={{ padding: 18, background: "var(--purple-soft)" }}>
         <div className="row" style={{ justifyContent: "space-between", marginBottom: 12 }}>
           <h3>Stream</h3>
@@ -786,11 +863,15 @@ function ActivityView({ logs }: { logs: LogLine[] }) {
           </span>
         </div>
         <div style={{ height: 440, display: "flex" }}>
-          <div className="scroll terminal" style={{
-            background: "#1F1A14", color: "#EFE7D6",
-            borderRadius: 12, padding: "14px 16px", flex: 1,
-          }}>
-            {logs.map((ln, _i) => {
+          <div className="scroll terminal" style={{ background: "#1F1A14", color: "#EFE7D6", borderRadius: 12, padding: "14px 16px", flex: 1 }}>
+            {logs.filter(l => {
+              if (actTab === "all") return l.kind !== "heartbeat";
+              if (actTab === "scout") return l.src === "scout" || (l.kind === "agent" && l.msg.toLowerCase().includes("scout"));
+              if (actTab === "eval")  return l.src === "eval"  || (l.kind === "agent" && (l.msg.toLowerCase().includes("eval") || l.msg.toLowerCase().includes("scor")));
+              if (actTab === "apply") return l.src === "apply" || (l.kind === "agent" && (l.msg.toLowerCase().includes("apply") || l.msg.toLowerCase().includes("fire") || l.msg.toLowerCase().includes("generat")));
+              if (actTab === "system") return l.kind === "system";
+              return true;
+            }).map((ln) => {
               const tone = ln.kind === "heartbeat" ? "blue" : ln.kind === "agent" ? "green" : "yellow";
               return (
                 <div key={ln.id} className="row gap-3" style={{ marginBottom: 5, alignItems: "baseline" }}>
@@ -816,706 +897,390 @@ function ActivityView({ logs }: { logs: LogLine[] }) {
    PROFILE VIEW
 ══════════════════════════════════════ */
 
-function ProfileView({ port, addLog }: { port: number; addLog: (m: string) => void }) {
-  const [drag, setDrag]     = useState(false);
+function ProfileView({ port }: { port: number }) {
+  const [profile, setProfile] = useState<any>(null);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editData, setEditData] = useState<any>(null);
+  const [editingCandidate, setEditingCandidate] = useState(false);
+  const [candForm, setCandForm] = useState({ n: "", s: "" });
+
+  const fetchProfile = useCallback(async () => {
+    try {
+      const r = await fetch(`http://127.0.0.1:${port}/api/v1/profile`);
+      setProfile(await r.json());
+    } catch { /* ignore */ }
+  }, [port]);
+
+  useEffect(() => { fetchProfile(); }, [fetchProfile]);
+
+  const deleteItem = async (type: string, id: string) => {
+    if (!window.confirm("Delete this item?")) return;
+    await fetch(`http://127.0.0.1:${port}/api/v1/profile/${type}/${id}`, { method: "DELETE" });
+    fetchProfile();
+  };
+
+  const saveEdit = async (type: string, id: string) => {
+    await fetch(`http://127.0.0.1:${port}/api/v1/profile/${type}/${id}`, {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(editData),
+    });
+    setEditId(null); fetchProfile();
+  };
+
+  const saveCandidate = async () => {
+    await fetch(`http://127.0.0.1:${port}/api/v1/profile/candidate`, {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(candForm),
+    });
+    setEditingCandidate(false); fetchProfile();
+  };
+
+  return (
+    <div className="scroll col" style={{ flex: 1, padding: "32px 40px", background: "var(--paper)", height: "100%", overflow: "auto" }}>
+      <div style={{ maxWidth: 960, margin: "0 auto", width: "100%" }}>
+        <div className="card" style={{ padding: "32px 40px", marginBottom: 24, background: "linear-gradient(135deg, var(--purple-soft) 0%, var(--pink-soft) 100%)", border: "1px solid var(--purple)" }}>
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
+            <span className="eyebrow" style={{ color: "var(--purple-ink)" }}>Identity Context</span>
+            {!editingCandidate && (
+              <button className="btn-icon" style={{ background: "var(--paper)", border: "1px solid var(--line)", padding: "6px 10px", borderRadius: 8, fontSize: 12, fontWeight: 600, color: "var(--ink-2)", cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}
+                onClick={() => { setEditingCandidate(true); setCandForm({ n: profile?.n || "", s: profile?.s || "" }); }}>
+                <Icon name="edit" size={13} /> Edit
+              </button>
+            )}
+          </div>
+          {editingCandidate ? (
+            <div className="col gap-3" style={{ marginTop: 16 }}>
+              <input className="field-input" placeholder="Your full name" value={candForm.n} onChange={e => setCandForm({ ...candForm, n: e.target.value })} style={{ fontSize: 18, fontWeight: 600 }} />
+              <textarea className="field-input" placeholder="Professional summary / target role — agents use this for scoring" rows={3} value={candForm.s} onChange={e => setCandForm({ ...candForm, s: e.target.value })} style={{ fontSize: 14, lineHeight: 1.6 }} />
+              <div className="row gap-2">
+                <button className="btn btn-primary" style={{ padding: "10px 24px" }} onClick={saveCandidate}>Save Identity</button>
+                <button className="btn btn-ghost" onClick={() => setEditingCandidate(false)}>Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <h2 style={{ fontSize: 40, fontWeight: 700, letterSpacing: "-0.02em", marginTop: 4 }}>{profile?.n || "Candidate Profile"}</h2>
+              <p style={{ fontSize: 15, color: "var(--ink-2)", marginTop: 12, lineHeight: 1.6, maxWidth: 600 }}>{profile?.s || "Add your name and target role summary above — this drives how agents score jobs for you."}</p>
+              <div className="row gap-3" style={{ marginTop: 24 }}>
+                <div className="pill mono" style={{ background: "var(--paper)", color: "var(--ink-2)" }}>{profile?.skills?.length || 0} SKILLS</div>
+                <div className="pill mono" style={{ background: "var(--paper)", color: "var(--ink-2)" }}>{profile?.exp?.length || 0} ROLES</div>
+                <div className="pill mono" style={{ background: "var(--paper)", color: "var(--ink-2)" }}>{profile?.projects?.length || 0} PROJECTS</div>
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="col gap-6" style={{ paddingBottom: 40 }}>
+          {/* Skills */}
+          <div className="card" style={{ padding: 28 }}>
+            <div className="row gap-3" style={{ marginBottom: 20 }}>
+              <div style={{ width: 32, height: 32, borderRadius: 10, background: "var(--blue)", color: "var(--blue-ink)", display: "grid", placeItems: "center" }}><Icon name="spark" size={16} /></div>
+              <h3 style={{ fontSize: 18, fontWeight: 600 }}>Verified Skills</h3>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 12 }}>
+              {(profile?.skills?.length || 0) === 0 && <div style={{ fontSize: 13, color: "var(--ink-4)" }}>No skills yet.</div>}
+              {profile?.skills?.map((s: any) => (
+                <div key={s.id} className="row" style={{ padding: "10px 14px", background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 12, justifyContent: "space-between", alignItems: "center" }}>
+                  <div className="row gap-2">
+                    <Icon name="check" size={14} color="var(--blue)" />
+                    <span style={{ fontSize: 14, fontWeight: 500 }}>{s.n}</span>
+                  </div>
+                  <button className="btn-icon" style={{ background: "var(--paper)", border: "1px solid var(--line)", padding: 6, borderRadius: 8, color: "var(--bad)" }} onClick={() => deleteItem("skill", s.id)} title="Delete"><Icon name="trash" size={13} /></button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Experience */}
+          <div className="card" style={{ padding: 28 }}>
+            <div className="row gap-3" style={{ marginBottom: 20 }}>
+              <div style={{ width: 32, height: 32, borderRadius: 10, background: "var(--orange)", color: "var(--orange-ink)", display: "grid", placeItems: "center" }}><Icon name="brief" size={16} /></div>
+              <h3 style={{ fontSize: 18, fontWeight: 600 }}>Career Timeline</h3>
+            </div>
+            <div className="col gap-3">
+              {(profile?.exp?.length || 0) === 0 && <div style={{ fontSize: 13, color: "var(--ink-4)" }}>No experience recorded.</div>}
+              {profile?.exp?.map((e: any) => (
+                <div key={e.id} style={{ padding: "20px 24px", background: "var(--paper-3)", borderRadius: 16, border: "1px solid var(--line)" }}>
+                  {editId === e.id ? (
+                    <div className="col gap-3">
+                      <div className="grid-2 gap-3">
+                        <input className="field-input" value={editData.role} placeholder="Role" onChange={v => setEditData({ ...editData, role: v.target.value })} />
+                        <input className="field-input" value={editData.co} placeholder="Company" onChange={v => setEditData({ ...editData, co: v.target.value })} />
+                      </div>
+                      <input className="field-input" value={editData.period} placeholder="Period" onChange={v => setEditData({ ...editData, period: v.target.value })} />
+                      <textarea className="field-input" value={editData.d} rows={4} placeholder="Description" onChange={v => setEditData({ ...editData, d: v.target.value })} />
+                      <div className="row gap-2">
+                        <button className="btn btn-primary" onClick={() => saveEdit("experience", e.id)}>Save</button>
+                        <button className="btn btn-ghost" onClick={() => setEditId(null)}>Cancel</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="col gap-1">
+                      <div className="row" style={{ justifyContent: "space-between" }}>
+                        <div className="col">
+                          <div style={{ fontSize: 16, fontWeight: 600 }}>{e.role}</div>
+                          <div className="row gap-2" style={{ fontSize: 13, color: "var(--ink-2)", marginTop: 3 }}>
+                            <span>{e.co}</span><span style={{ color: "var(--ink-4)" }}>·</span><span className="mono" style={{ fontSize: 11 }}>{e.period}</span>
+                          </div>
+                        </div>
+                        <div className="row gap-2">
+                          <button className="btn-icon" style={{ background: "var(--paper)", border: "1px solid var(--line)", padding: 6, borderRadius: 8 }} onClick={() => { setEditId(e.id); setEditData({ ...e }); }}><Icon name="edit" size={14} /></button>
+                          <button className="btn-icon" style={{ background: "var(--paper)", border: "1px solid var(--line)", padding: 6, borderRadius: 8, color: "var(--bad)" }} onClick={() => deleteItem("experience", e.id)}><Icon name="trash" size={14} /></button>
+                        </div>
+                      </div>
+                      {e.d && <div style={{ fontSize: 13.5, color: "var(--ink-2)", lineHeight: 1.6, marginTop: 10, whiteSpace: "pre-wrap" }}>{e.d}</div>}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Projects */}
+          <div className="card" style={{ padding: 28 }}>
+            <div className="row gap-3" style={{ marginBottom: 20 }}>
+              <div style={{ width: 32, height: 32, borderRadius: 10, background: "var(--pink)", color: "var(--pink-ink)", display: "grid", placeItems: "center" }}><Icon name="layers" size={16} /></div>
+              <h3 style={{ fontSize: 18, fontWeight: 600 }}>Portfolio & Projects</h3>
+            </div>
+            <div className="grid-2">
+              {(profile?.projects?.length || 0) === 0 && <div style={{ fontSize: 13, color: "var(--ink-4)" }}>No projects mapped.</div>}
+              {profile?.projects?.map((p: any) => (
+                <div key={p.id} style={{ padding: 20, background: "var(--paper-3)", borderRadius: 16, border: "1px solid var(--line)" }}>
+                  {editId === p.id ? (
+                    <div className="col gap-3">
+                      <input className="field-input" value={editData.title} placeholder="Title" onChange={v => setEditData({ ...editData, title: v.target.value })} />
+                      <input className="field-input" value={editData.stack} placeholder="Stack (comma-separated)" onChange={v => setEditData({ ...editData, stack: v.target.value })} />
+                      <input className="field-input" value={editData.repo} placeholder="Repo URL" onChange={v => setEditData({ ...editData, repo: v.target.value })} />
+                      <textarea className="field-input" value={editData.impact} rows={4} placeholder="Impact" onChange={v => setEditData({ ...editData, impact: v.target.value })} />
+                      <div className="row gap-2">
+                        <button className="btn btn-primary" onClick={() => saveEdit("project", p.id)}>Save</button>
+                        <button className="btn btn-ghost" onClick={() => setEditId(null)}>Cancel</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="col gap-1">
+                      <div className="row" style={{ justifyContent: "space-between" }}>
+                        <div style={{ fontSize: 16, fontWeight: 600 }}>{p.title}</div>
+                        <div className="row gap-2">
+                          <button className="btn-icon" style={{ background: "var(--paper)", border: "1px solid var(--line)", padding: 6, borderRadius: 8 }} onClick={() => { setEditId(p.id); setEditData({ ...p, stack: Array.isArray(p.stack) ? p.stack.join(", ") : (p.stack || "") }); }}><Icon name="edit" size={14} /></button>
+                          <button className="btn-icon" style={{ background: "var(--paper)", border: "1px solid var(--line)", padding: 6, borderRadius: 8, color: "var(--bad)" }} onClick={() => deleteItem("project", p.id)}><Icon name="trash" size={14} /></button>
+                        </div>
+                      </div>
+                      <div className="row gap-1" style={{ flexWrap: "wrap", margin: "8px 0 10px" }}>
+                        {(Array.isArray(p.stack) ? p.stack : (p.stack || "").split(",").filter(Boolean)).map((s: string, i: number) => (
+                          <span key={i} className="pill" style={{ fontSize: 11, padding: "4px 10px", background: "var(--pink-soft)", color: "var(--pink-ink)", border: "1px solid var(--pink)" }}>{s.trim()}</span>
+                        ))}
+                      </div>
+                      {p.impact && <div style={{ fontSize: 13.5, color: "var(--ink-2)", lineHeight: 1.6 }}>{p.impact}</div>}
+                      {p.repo && <div className="row gap-2" style={{ marginTop: 10 }}><Icon name="link" size={12} color="var(--ink-3)" /><a href={p.repo} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "var(--ink-3)" }}>{p.repo}</a></div>}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════
+   INGESTION VIEW
+══════════════════════════════════════ */
+
+function IngestionView({ port }: { port: number }) {
   const [status, setStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
-  const [profileData, setProfileData] = useState<any>(null);
-  const [rightTab, setRightTab] = useState<"file" | "text" | "scrape">("file");
-  const [rawPastedText, setRawPastedText] = useState("");
-  const [scrapeUrls, setScrapeUrls] = useState({ portfolio: "", github: "", linkedin: "", twitter: "" });
-  const [scrapingProgress, setScrapingProgress] = useState<string[]>([]);
-  const [isScraping, setIsScraping] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
-  
-  const [ov, setOv] = useState<Overrides>({
-    name: "", targetRole: "", email: "",
-    phone: "", linkedin: "", github: "",
-    location: "", summary: "",
-  });
+  const [activeTab, setActiveTab] = useState<"resume" | "manual" | "raw" | "template">("resume");
 
-  const [projects, setProjects] = useState<any[]>([
-    { title: "JustHireMe Core", stack: ["Tauri", "FastAPI", "Kùzu"], impact: "Autonomous agent pipeline.", repo: "github.com/justhireme" }
-  ]);
-  const [exp, setExp] = useState<any[]>([
-    { role: "Product Engineer", co: "Innovate LLC", period: "2023 - 2025", d: "Designed RAG data pathways." }
-  ]);
+  // Forms
+  const [skillForm, setSkillForm] = useState({ n: "", cat: "technical" });
+  const [expForm, setExpForm]     = useState({ role: "", co: "", period: "", d: "" });
+  const [projForm, setProjForm]   = useState({ title: "", stack: "", repo: "", impact: "" });
+  const [rawText, setRawText]     = useState("");
+  const [template, setTemplate]   = useState("");
+  const [templateLoaded, setTemplateLoaded] = useState(false);
 
-  const [showProjForm, setShowProjForm] = useState(false);
-  const [newProj, setNewProj] = useState({ title: "", stack: "", impact: "", repo: "" });
-  const [editProjIdx, setEditProjIdx] = useState<number | null>(null);
-  const [editProjForm, setEditProjForm] = useState({ title: "", stack: "", impact: "", repo: "" });
+  // Load existing template on mount
+  useEffect(() => {
+    if (activeTab !== "template" || templateLoaded) return;
+    fetch(`http://127.0.0.1:${port}/api/v1/template`)
+      .then(r => r.json())
+      .then(d => { setTemplate(d.template || ""); setTemplateLoaded(true); })
+      .catch(() => {});
+  }, [activeTab, port, templateLoaded]);
 
-  const [showExpForm, setShowExpForm] = useState(false);
-  const [newExp, setNewExp] = useState({ role: "", co: "", period: "", d: "" });
-  const [editExpIdx, setEditExpIdx] = useState<number | null>(null);
-  const [editExpForm, setEditExpForm] = useState({ role: "", co: "", period: "", d: "" });
-
-  const setField = (k: keyof Overrides) =>
-    (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
-      setOv(o => ({ ...o, [k]: e.target.value }));
-
-  const getRawPayload = () => {
-    const core = Object.entries(ov)
-      .filter(([_, v]) => v)
-      .map(([k, v]) => `${k}: ${v}`)
-      .join("\n");
-    const projs = projects
-      .map(p => `Project: ${p.title}\nStack: ${Array.isArray(p.stack) ? p.stack.join(", ") : p.stack}\nRepo: ${p.repo}\nImpact: ${p.impact}`)
-      .join("\n\n");
-    const exps = exp
-      .map(e => `Experience: ${e.role} at ${e.co}\nPeriod: ${e.period}\nDescription: ${e.d}`)
-      .join("\n\n");
-    return [core, "--- Projects ---", projs, "--- Experience ---", exps].join("\n\n");
-  };
-
-  const ingest = async (file: File) => {
+  const saveTemplate = async () => {
     setStatus("loading");
-    const fd = new FormData();
-    fd.append("file", file);
-    const rawText = getRawPayload();
-    if (rawText) fd.append("raw", rawText);
     try {
-      const r = await fetch(`http://127.0.0.1:${port}/api/v1/ingest`, { method: "POST", body: fd });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.detail || "Server internal failure");
-      setProfileData(d);
-      setOv(o => ({ ...o, name: d.n || o.name, summary: d.s || o.summary }));
-      if (d.projects) setProjects(d.projects);
-      if (d.exp) setExp(d.exp);
-      setStatus("done");
-      addLog(`Ingested Profile: ${d.n}`);
-    } catch (e: any) { 
-      setStatus("error");
-      addLog(`Ingestion Error: ${e.message || e}`);
-    }
-  };
-
-  const saveOverrides = async () => {
-    setStatus("loading");
-    const fd = new FormData();
-    const payloadText = rawPastedText || getRawPayload();
-    fd.append("raw", payloadText);
-    try {
-      const r = await fetch(`http://127.0.0.1:${port}/api/v1/ingest`, { method: "POST", body: fd });
-      const d = await r.json();
-      setProfileData(d);
-      setStatus("done");
-      addLog(`Updated Profile parameters: ${d.n}`);
+      const r = await fetch(`http://127.0.0.1:${port}/api/v1/template`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ template }),
+      });
+      setStatus(r.ok ? "done" : "error");
     } catch { setStatus("error"); }
   };
 
-  const runScraper = async () => {
-    setIsScraping(true);
-    setScrapingProgress([]);
-    const addProg = (msg: string) => setScrapingProgress(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
-    
-    addProg("Initializing multi-agent scraper protocols...");
-    await new Promise(r => setTimeout(r, 1000));
-    
-    if (scrapeUrls.portfolio) {
-      addProg(`Scraping Portfolio: ${scrapeUrls.portfolio}...`);
-      await new Promise(r => setTimeout(r, 1200));
-      addProg(" -> Extracted Project Nodes.");
-    }
-    if (scrapeUrls.github) {
-      addProg(`Accessing GitHub API for @${scrapeUrls.github}...`);
-      await new Promise(r => setTimeout(r, 1500));
-      addProg(" -> Fetched public repositories.");
-    }
-    if (scrapeUrls.linkedin) {
-      addProg(`Launching LinkedIn Graph session...`);
-      await new Promise(r => setTimeout(r, 1200));
-      addProg(" -> Captured Work Experience timeline.");
-    }
-    
-    addProg("Consolidating GraphRAG semantic links...");
-    await new Promise(r => setTimeout(r, 1000));
-    
-    const fd = new FormData();
-    const rawText = getRawPayload() + `\n\nScraped Context:\nPortfolio: ${scrapeUrls.portfolio}\nGitHub: ${scrapeUrls.github}\nLinkedIn: ${scrapeUrls.linkedin}\nTwitter: ${scrapeUrls.twitter}`;
-    fd.append("raw", rawText);
-    
+  const addManual = async (type: string, data: any) => {
+    setStatus("loading");
     try {
-      const r = await fetch(`http://127.0.0.1:${port}/api/v1/ingest`, { method: "POST", body: fd });
-      const d = await r.json();
-      if (!r.ok) {
-        throw new Error(d.detail || "Server internal failure");
-      }
-      setProfileData(d);
-      setStatus("done");
-      addProg(" Extraction Complete!");
-    } catch (e: any) {
-      setStatus("error");
-      addProg(` Critical Ingestion Failure: ${e.message || e}`);
-    }
-    
-    setIsScraping(false);
+      const r = await fetch(`http://127.0.0.1:${port}/api/v1/profile/${type}`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
+      });
+      if (r.ok) {
+        setStatus("done");
+        if (type === "skill")   setSkillForm({ n: "", cat: "technical" });
+        if (type === "exp")     setExpForm({ role: "", co: "", period: "", d: "" });
+        if (type === "project") setProjForm({ title: "", stack: "", repo: "", impact: "" });
+      } else { setStatus("error"); }
+    } catch { setStatus("error"); }
   };
 
-  useEffect(() => {
-    const unsub: (() => void)[] = [];
-    (async () => {
-      const u = await listen<{ paths: string[] }>("tauri://drop", async (ev) => {
-        const p = ev.payload.paths[0];
-        if (!p?.endsWith(".pdf")) return;
-        const fd = new FormData();
-        fd.append("raw", `pdf_path:${p}`);
-        setStatus("loading");
-        try {
-          const r = await fetch(`http://127.0.0.1:${port}/api/v1/ingest`, { method: "POST", body: fd });
-          const d = await r.json(); setStatus("done");
-          addLog(`Ingested: ${d.n}`);
-        } catch { setStatus("error"); }
-      });
-      unsub.push(u);
-    })();
-    return () => unsub.forEach(u => u());
-  }, [port, addLog]);
+  const ingestResume = async (file: File) => {
+    setStatus("loading");
+    const fd = new FormData();
+    fd.append("file", file);
+    try {
+      const r = await fetch(`http://127.0.0.1:${port}/api/v1/ingest`, { method: "POST", body: fd });
+      setStatus(r.ok ? "done" : "error");
+    } catch { setStatus("error"); }
+  };
 
-  const FIELDS: { k: keyof Overrides; label: string; type: string; ph: string }[] = [
-    { k: "name",       label: "Full Name",   type: "text",  ph: "Jane Smith"        },
-    { k: "targetRole", label: "Target Role", type: "text",  ph: "Senior Engineer"   },
-    { k: "email",      label: "Email",       type: "email", ph: "jane@example.com"  },
-    { k: "phone",      label: "Phone",       type: "text",  ph: "+1 555 000 0000"   },
-    { k: "linkedin",   label: "LinkedIn",    type: "url",   ph: "linkedin.com/in/…" },
-    { k: "github",     label: "GitHub",      type: "url",   ph: "github.com/…"      },
+  const ingestRaw = async () => {
+    setStatus("loading");
+    const fd = new FormData();
+    fd.append("raw", rawText);
+    try {
+      const r = await fetch(`http://127.0.0.1:${port}/api/v1/ingest`, { method: "POST", body: fd });
+      if (r.ok) { setStatus("done"); setRawText(""); } else { setStatus("error"); }
+    } catch { setStatus("error"); }
+  };
+
+  const TABS = [
+    { id: "resume" as const,   label: "Resume Upload" },
+    { id: "manual" as const,   label: "Manual Forms"  },
+    { id: "raw" as const,      label: "Raw Text"      },
+    { id: "template" as const, label: "📄 Resume Template" },
   ];
 
   return (
-    <div className="scroll" style={{ flex: 1, padding: 24, height: "100%", minHeight: 0 }}>
-      {/* HEADER */}
-      <div className="col gap-2" style={{ maxWidth: 1300, margin: "0 auto 24px" }}>
-        <span className="eyebrow">Profile Workspace</span>
-        <h1 style={{ fontSize: 44, lineHeight: 1.05 }}>Teach the agent <span style={{ color: "var(--ink-3)", fontStyle: "italic" }}>who you are.</span></h1>
-        <p style={{ color: "var(--ink-2)", fontSize: 14.5, maxWidth: 640, margin: 0, lineHeight: 1.5 }}>
-          Establish vector nodes across multi-modal onboarding protocols. Streamline the automated data aggregation pipeline below.
-        </p>
-      </div>
+    <div className="col scroll" style={{ flex: 1, height: "100%", overflow: "auto", background: "var(--paper)", padding: "48px 32px", alignItems: "center" }}>
+      <div style={{ maxWidth: 680, width: "100%" }}>
+        <div style={{ marginBottom: 32 }}>
+          <span className="eyebrow">Append-only Pipeline</span>
+          <h2 style={{ fontSize: 32, fontWeight: 700, letterSpacing: "-0.02em" }}>Add Context</h2>
+          <p style={{ color: "var(--ink-3)", marginTop: 8, fontSize: 14 }}>Everything you add is merged into your Identity Graph. Set a resume template so the generator follows your preferred format.</p>
+        </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 32, maxWidth: 1300, margin: "0 auto", paddingBottom: 60, alignItems: "start" }}>
-        
-        {/* LEFT COLUMN: BUILDERS & INGESTION */}
-        <div className="col gap-6">
-          {/* SECTION 1 — MULTI-MODAL INGESTION HUB */}
-          <div className="card col gap-4" style={{ padding: 24, background: "var(--paper-2)" }}>
-            <div className="row gap-2" style={{ borderBottom: "1px solid var(--line)", paddingBottom: 12, marginBottom: 4 }}>
-              <div style={{ width: 26, height: 26, borderRadius: 7, background: "var(--ink)", color: "var(--paper)", display: "grid", placeItems: "center" }}>
-                <Icon name="spark" size={13} />
-              </div>
-              <h3 style={{ fontSize: 16 }}>Profile Ingestion Suite</h3>
-            </div>
-
-            <div className="row gap-3" style={{ background: "var(--paper-3)", padding: 6, borderRadius: 12 }}>
-              <button
-                className={"btn " + (rightTab === "file" ? "btn-primary" : "btn-ghost")}
-                style={{ flex: 1, justifyContent: "center", borderRadius: 8, border: "none", boxShadow: rightTab === "file" ? "var(--shadow-sm)" : "none" }}
-                onClick={() => setRightTab("file")}
-              >
-                <Icon name="file" size={14} /> Resume Drop
-              </button>
-              <button
-                className={"btn " + (rightTab === "scrape" ? "btn-primary" : "btn-ghost")}
-                style={{ flex: 1, justifyContent: "center", borderRadius: 8, border: "none", boxShadow: rightTab === "scrape" ? "var(--shadow-sm)" : "none" }}
-                onClick={() => setRightTab("scrape")}
-              >
-                <Icon name="spark" size={14} /> Social Scrapers
-              </button>
-              <button
-                className={"btn " + (rightTab === "text" ? "btn-primary" : "btn-ghost")}
-                style={{ flex: 1, justifyContent: "center", borderRadius: 8, border: "none", boxShadow: rightTab === "text" ? "var(--shadow-sm)" : "none" }}
-                onClick={() => setRightTab("text")}
-              >
-                <Icon name="edit" size={14} /> Raw Content
-              </button>
-            </div>
-
-            {rightTab === "file" ? (
-              <div
-                className={"dropzone " + (drag ? "over" : "")}
-                onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
-                onDragLeave={() => setDrag(false)}
-                onDrop={(e) => { e.preventDefault(); setDrag(false); const f = e.dataTransfer.files[0]; if (f) ingest(f); }}
-                onClick={() => inputRef.current?.click()}
-                style={{
-                  padding: "60px 24px", cursor: "pointer", border: "2px dashed var(--line-2)",
-                  borderRadius: 18, background: status === "done" ? "var(--green-soft)" : status === "error" ? "var(--bad-soft)" : drag ? "var(--coral-soft)" : "var(--purple-soft)",
-                  transition: "all 0.15s ease", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-                }}
-              >
-                <input ref={inputRef} type="file" accept=".pdf" style={{ display: "none" }}
-                  onChange={e => { const f = e.target.files?.[0]; if (f) ingest(f); }} />
-                
-                <div className="col gap-3" style={{ alignItems: "center", textAlign: "center" }}>
-                  {status === "loading" ? (
-                    <>
-                      <Icon name="spark" size={40} style={{ animation: "spin-slow 2s linear infinite", color: "var(--purple-ink)" }} />
-                      <div style={{ fontSize: 16, fontWeight: 600, color: "var(--purple-ink)" }}>Embedding profile into knowledge graph...</div>
-                    </>
-                  ) : status === "done" ? (
-                    <>
-                      <div style={{ width: 56, height: 56, borderRadius: 14, background: "var(--green)", color: "var(--green-ink)", display: "grid", placeItems: "center", animation: "success-scale 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275)" }}>
-                        <Icon name="check" size={28} />
-                      </div>
-                      <div style={{ fontSize: 16, fontWeight: 600, color: "var(--green-ink)" }}>Identity Synchronized</div>
-                      <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 4 }}>Node aggregated successfully. Drop again to replace.</div>
-                    </>
-                  ) : status === "error" ? (
-                    <>
-                      <div style={{ width: 56, height: 56, borderRadius: 14, background: "var(--bad)", color: "white", display: "grid", placeItems: "center", animation: "shake 0.6s ease" }}>
-                        <Icon name="x" size={28} />
-                      </div>
-                      <div style={{ fontSize: 16, fontWeight: 600, color: "var(--bad)" }}>Ingestion Failed</div>
-                      <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 4 }}>Could not index node. Please check source integrity.</div>
-                    </>
-                  ) : (
-                    <>
-                      <div style={{
-                        width: 64, height: 64, borderRadius: 16, background: "var(--paper-3)",
-                        color: "var(--ink-2)", display: "grid", placeItems: "center", boxShadow: "var(--shadow-sm)"
-                      }}>
-                        <Icon name="upload" size={24} />
-                      </div>
-                      <div className="col gap-1">
-                        <div style={{ fontSize: 16, fontWeight: 600, color: "var(--ink)" }}>Drop master PDF résumé</div>
-                        <div style={{ fontSize: 12, color: "var(--ink-3)" }}>Drag & Drop anywhere or Click to browse local storage</div>
-                      </div>
-                    </>
-                  )}
-                </div>
-              </div>
-            ) : rightTab === "scrape" ? (
-              <div className="col gap-4">
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-                  <div className="col gap-1">
-                    <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>Portfolio URL</label>
-                    <input type="text" className="field-input" value={scrapeUrls.portfolio} onChange={e => setScrapeUrls(u => ({ ...u, portfolio: e.target.value }))} placeholder="https://janedoe.dev" style={{ padding: "11px 14px", borderRadius: 10, border: "1px solid var(--line)", background: "var(--card)", fontSize: 13 }} />
-                  </div>
-                  <div className="col gap-1">
-                    <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>GitHub Handle</label>
-                    <input type="text" className="field-input" value={scrapeUrls.github} onChange={e => setScrapeUrls(u => ({ ...u, github: e.target.value }))} placeholder="github.com/janedoe" style={{ padding: "11px 14px", borderRadius: 10, border: "1px solid var(--line)", background: "var(--card)", fontSize: 13 }} />
-                  </div>
-                  <div className="col gap-1" style={{ gridColumn: "1/-1" }}>
-                    <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>LinkedIn Endpoint</label>
-                    <input type="text" className="field-input" value={scrapeUrls.linkedin} onChange={e => setScrapeUrls(u => ({ ...u, linkedin: e.target.value }))} placeholder="linkedin.com/in/janedoe" style={{ padding: "11px 14px", borderRadius: 10, border: "1px solid var(--line)", background: "var(--card)", fontSize: 13 }} />
-                  </div>
-                </div>
-
-                <button
-                  className="btn btn-primary"
-                  style={{ justifyContent: "center", padding: 14, fontSize: 14 }}
-                  onClick={runScraper}
-                  disabled={isScraping || (!scrapeUrls.portfolio && !scrapeUrls.github && !scrapeUrls.linkedin)}
-                >
-                  {isScraping ? "Deploying Autonomous Scraper Agents..." : "Execute Footprint Extraction"}
-                </button>
-
-                {scrapingProgress.length > 0 && (
-                  <div className="mono" style={{
-                    padding: 14, background: "var(--paper-3)", borderRadius: 12,
-                    fontSize: 11, color: "var(--ink-2)", maxHeight: 150, overflowY: "auto",
-                    border: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 6
-                  }}>
-                    {scrapingProgress.map((prog, idx) => (
-                      <div key={idx} style={{ color: prog.includes("->") ? "var(--accent)" : "var(--ink-2)" }}>{prog}</div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="col gap-3">
-                <textarea
-                  className="field-input"
-                  value={rawPastedText}
-                  onChange={e => setRawPastedText(e.target.value)}
-                  placeholder="Paste your LinkedIn text, raw CV descriptors, or unstructured background context..."
-                  rows={6}
-                  style={{
-                    width: "100%", padding: "14px", borderRadius: 12,
-                    border: "1px solid var(--line)", background: "var(--card)", fontSize: 13,
-                    resize: "none", lineHeight: 1.5,
-                  }}
-                />
-                <button
-                  className="btn btn-primary"
-                  style={{ padding: "12px", justifyContent: "center" }}
-                  onClick={saveOverrides}
-                  disabled={status === "loading" || !rawPastedText.trim()}
-                >
-                  {status === "loading" ? "Processing..." : "Sync Node Parameters"}
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* SECTION 3 — ADVANCED CONFIGURATION (OVERRIDES & BUILDERS) */}
-          <div className="card col gap-4" style={{ padding: 24, background: "var(--paper-2)" }}>
-            <div className="row gap-2" style={{ borderBottom: "1px solid var(--line)", paddingBottom: 12, marginBottom: 4 }}>
-              <div style={{ width: 26, height: 26, borderRadius: 7, background: "var(--ink)", color: "var(--paper)", display: "grid", placeItems: "center" }}>
-                <Icon name="edit" size={13} />
-              </div>
-              <h3 style={{ fontSize: 16 }}>Identity Adjustments</h3>
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-              {FIELDS.map(({ k, label, type, ph }) => (
-                <div key={k} className="col gap-1">
-                  <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)", letterSpacing: "0.02em" }}>{label}</label>
-                  <input
-                    type={type}
-                    value={ov[k]}
-                    onChange={setField(k)}
-                    placeholder={ph}
-                    style={{
-                      padding: "11px 14px", borderRadius: 12, border: "1px solid var(--line)",
-                      background: "var(--card)", fontSize: 13, color: "var(--ink)",
-                      transition: "border-color 0.15s ease",
-                    }}
-                    className="field-input"
-                  />
-                </div>
-              ))}
-              <div style={{ gridColumn: "1/-1" }} className="col gap-1">
-                <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)", letterSpacing: "0.02em" }}>Location</label>
-                <input
-                  type="text"
-                  className="field-input"
-                  value={ov.location}
-                  onChange={setField("location")}
-                  placeholder="San Francisco, CA (Remote OK)"
-                  style={{
-                    padding: "11px 14px", borderRadius: 12, border: "1px solid var(--line)",
-                    background: "var(--card)", fontSize: 13, color: "var(--ink)",
-                  }}
-                />
-              </div>
-              <div style={{ gridColumn: "1/-1" }} className="col gap-1">
-                <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)", letterSpacing: "0.02em" }}>Professional Summary</label>
-                <textarea
-                  className="field-input"
-                  value={ov.summary}
-                  onChange={setField("summary")}
-                  placeholder="A short punchy baseline about your expertise..."
-                  rows={4}
-                  style={{
-                    padding: "11px 14px", borderRadius: 12, border: "1px solid var(--line)",
-                    background: "var(--card)", fontSize: 13, color: "var(--ink)", resize: "none",
-                    lineHeight: 1.5,
-                  }}
-                />
-              </div>
-            </div>
-
-            <button
-              className="btn btn-primary"
-              onClick={saveOverrides}
-              disabled={status === "loading"}
-              style={{ padding: "12px", borderRadius: 12, fontSize: 14, justifyContent: "center", marginTop: 8 }}
-            >
-              {status === "loading" ? "Processing..." : "Apply & Save Parameters"}
+        <div className="row gap-2" style={{ background: "var(--paper-3)", padding: 6, borderRadius: 12, marginBottom: 32 }}>
+          {TABS.map(t => (
+            <button key={t.id} onClick={() => { setActiveTab(t.id); setStatus("idle"); }}
+              className={"btn " + (activeTab === t.id ? "btn-primary" : "btn-ghost")}
+              style={{ flex: 1, border: "none", boxShadow: activeTab === t.id ? "var(--shadow-sm)" : "none", fontSize: 13, padding: "10px 0", borderRadius: 8 }}>
+              {t.label}
             </button>
-          </div>
-
-          {/* PROJECTS BUILDER */}
-          <div className="card col gap-3" style={{ padding: 24, background: "var(--card)" }}>
-            <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-              <div className="row gap-2">
-                <Icon name="layers" size={16} />
-                <h3 style={{ fontSize: 16 }}>Projects Portfolio</h3>
-              </div>
-              <button className="btn btn-icon" onClick={() => setShowProjForm(!showProjForm)}>
-                <Icon name={showProjForm ? "x" : "plus"} size={14} />
-              </button>
-            </div>
-
-            {showProjForm && (
-              <div className="col gap-3" style={{ padding: 16, background: "var(--paper-3)", borderRadius: 14 }}>
-                <div className="col gap-1">
-                  <label style={{ fontSize: 11.5, fontWeight: 600 }}>Project Title</label>
-                  <input type="text" className="field-input" value={newProj.title} onChange={e => setNewProj(p => ({ ...p, title: e.target.value }))} placeholder="JustHireMe" style={{ padding: "10px 14px", borderRadius: 10, border: "1px solid var(--line)", fontSize: 13, background: "var(--card)" }} />
-                </div>
-                <div className="col gap-1">
-                  <label style={{ fontSize: 11.5, fontWeight: 600 }}>Tech Stack (comma separated)</label>
-                  <input type="text" className="field-input" value={newProj.stack} onChange={e => setNewProj(p => ({ ...p, stack: e.target.value }))} placeholder="React, Tauri, Rust" style={{ padding: "10px 14px", borderRadius: 10, border: "1px solid var(--line)", fontSize: 13, background: "var(--card)" }} />
-                </div>
-                <div className="col gap-1">
-                  <label style={{ fontSize: 11.5, fontWeight: 600 }}>GitHub Repo URL</label>
-                  <input type="text" className="field-input" value={newProj.repo} onChange={e => setNewProj(p => ({ ...p, repo: e.target.value }))} placeholder="github.com/username/repo" style={{ padding: "10px 14px", borderRadius: 10, border: "1px solid var(--line)", fontSize: 13, background: "var(--card)" }} />
-                </div>
-                <div className="col gap-1">
-                  <label style={{ fontSize: 11.5, fontWeight: 600 }}>Impact / Description</label>
-                  <textarea className="field-input" value={newProj.impact} onChange={e => setNewProj(p => ({ ...p, impact: e.target.value }))} placeholder="Enabled autonomous resume matching via local graphs." rows={2} style={{ padding: "10px 14px", borderRadius: 10, border: "1px solid var(--line)", fontSize: 13, resize: "none", background: "var(--card)", lineHeight: 1.5 }} />
-                </div>
-                <button className="btn btn-primary" style={{ justifyContent: "center" }} onClick={() => {
-                  if (newProj.title) {
-                    setProjects(p => [...p, { ...newProj, stack: newProj.stack.split(",").map(s => s.trim()) }]);
-                    setNewProj({ title: "", stack: "", impact: "", repo: "" });
-                    setShowProjForm(false);
-                  }
-                }}>Save Project Node</button>
-              </div>
-            )}
-
-            <div className="col gap-2">
-              {projects.map((p, idx) => {
-                const isEditing = editProjIdx === idx;
-                return isEditing ? (
-                  <div key={idx} className="col gap-3" style={{ padding: 16, background: "var(--paper-3)", borderRadius: 14 }}>
-                    <div className="col gap-1">
-                      <label style={{ fontSize: 11.5, fontWeight: 600 }}>Project Title</label>
-                      <input type="text" className="field-input" value={editProjForm.title} onChange={e => setEditProjForm(prev => ({ ...prev, title: e.target.value }))} style={{ padding: "10px 14px", borderRadius: 10, border: "1px solid var(--line)", fontSize: 13, background: "var(--card)" }} />
-                    </div>
-                    <div className="col gap-1">
-                      <label style={{ fontSize: 11.5, fontWeight: 600 }}>Tech Stack (comma separated)</label>
-                      <input type="text" className="field-input" value={editProjForm.stack} onChange={e => setEditProjForm(prev => ({ ...prev, stack: e.target.value }))} style={{ padding: "10px 14px", borderRadius: 10, border: "1px solid var(--line)", fontSize: 13, background: "var(--card)" }} />
-                    </div>
-                    <div className="col gap-1">
-                      <label style={{ fontSize: 11.5, fontWeight: 600 }}>GitHub Repo URL</label>
-                      <input type="text" className="field-input" value={editProjForm.repo} onChange={e => setEditProjForm(prev => ({ ...prev, repo: e.target.value }))} style={{ padding: "10px 14px", borderRadius: 10, border: "1px solid var(--line)", fontSize: 13, background: "var(--card)" }} />
-                    </div>
-                    <div className="col gap-1">
-                      <label style={{ fontSize: 11.5, fontWeight: 600 }}>Impact / Description</label>
-                      <textarea className="field-input" value={editProjForm.impact} onChange={e => setEditProjForm(prev => ({ ...prev, impact: e.target.value }))} rows={2} style={{ padding: "10px 14px", borderRadius: 10, border: "1px solid var(--line)", fontSize: 13, resize: "none", background: "var(--card)", lineHeight: 1.5 }} />
-                    </div>
-                    <div className="row gap-2">
-                      <button className="btn btn-primary" style={{ flex: 1, justifyContent: "center" }} onClick={() => {
-                        if (editProjForm.title) {
-                          setProjects(prev => prev.map((item, i) => i === idx ? { ...editProjForm, stack: typeof editProjForm.stack === "string" ? editProjForm.stack.split(",").map(s => s.trim()) : editProjForm.stack } : item));
-                          setEditProjIdx(null);
-                        }
-                      }}>Save Changes</button>
-                      <button className="btn btn-ghost" style={{ flex: 1, justifyContent: "center" }} onClick={() => setEditProjIdx(null)}>Cancel</button>
-                    </div>
-                  </div>
-                ) : (
-                  <div key={idx} style={{ padding: 14, background: "var(--paper-2)", borderRadius: 12, border: "1px solid var(--line)" }} className="col gap-2">
-                    <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
-                      <div className="col gap-1">
-                        <div style={{ fontSize: 14, fontWeight: 600 }}>{p.title}</div>
-                        {p.repo && <div className="mono" style={{ fontSize: 10, color: "var(--accent)" }}>{p.repo}</div>}
-                      </div>
-                      <div className="row gap-1">
-                        <button className="btn btn-icon btn-ghost" style={{ padding: 4 }} onClick={() => {
-                          setEditProjIdx(idx);
-                          setEditProjForm({ title: p.title, stack: Array.isArray(p.stack) ? p.stack.join(", ") : p.stack, impact: p.impact, repo: p.repo });
-                        }} aria-label="Edit project"><Icon name="edit" size={13} /></button>
-                        <button className="btn btn-icon btn-ghost" style={{ padding: 4, color: "var(--bad)" }} onClick={() => {
-                          setProjects(prev => prev.filter((_, i) => i !== idx));
-                        }} aria-label="Delete project"><Icon name="x" size={13} /></button>
-                      </div>
-                    </div>
-                    <p style={{ fontSize: 12.5, color: "var(--ink-2)", margin: 0 }}>{p.impact}</p>
-                    <div className="row gap-1" style={{ flexWrap: "wrap", marginTop: 4 }}>
-                      {(Array.isArray(p.stack) ? p.stack : [p.stack]).map((s: string, i: number) => (
-                        <span key={i} className="pill" style={{ background: "var(--card)", fontSize: 9 }}>{s}</span>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* EXPERIENCE BUILDER */}
-          <div className="card col gap-3" style={{ padding: 24, background: "var(--card)" }}>
-            <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-              <div className="row gap-2">
-                <Icon name="trending" size={16} />
-                <h3 style={{ fontSize: 16 }}>Professional Experience</h3>
-              </div>
-              <button className="btn btn-icon" onClick={() => setShowExpForm(!showExpForm)}>
-                <Icon name={showExpForm ? "x" : "plus"} size={14} />
-              </button>
-            </div>
-
-            {showExpForm && (
-              <div className="col gap-3" style={{ padding: 16, background: "var(--paper-3)", borderRadius: 14 }}>
-                <div className="col gap-1">
-                  <label style={{ fontSize: 11.5, fontWeight: 600 }}>Role Title</label>
-                  <input type="text" className="field-input" value={newExp.role} onChange={e => setNewExp(p => ({ ...p, role: e.target.value }))} placeholder="Senior Engineer" style={{ padding: "10px 14px", borderRadius: 10, border: "1px solid var(--line)", fontSize: 13, background: "var(--card)" }} />
-                </div>
-                <div className="col gap-1">
-                  <label style={{ fontSize: 11.5, fontWeight: 600 }}>Company</label>
-                  <input type="text" className="field-input" value={newExp.co} onChange={e => setNewExp(p => ({ ...p, co: e.target.value }))} placeholder="Tech Corp" style={{ padding: "10px 14px", borderRadius: 10, border: "1px solid var(--line)", fontSize: 13, background: "var(--card)" }} />
-                </div>
-                <div className="col gap-1">
-                  <label style={{ fontSize: 11.5, fontWeight: 600 }}>Period</label>
-                  <input type="text" className="field-input" value={newExp.period} onChange={e => setNewExp(p => ({ ...p, period: e.target.value }))} placeholder="2022 - 2024" style={{ padding: "10px 14px", borderRadius: 10, border: "1px solid var(--line)", fontSize: 13, background: "var(--card)" }} />
-                </div>
-                <div className="col gap-1">
-                  <label style={{ fontSize: 11.5, fontWeight: 600 }}>Description</label>
-                  <textarea className="field-input" value={newExp.d} onChange={e => setNewExp(p => ({ ...p, d: e.target.value }))} placeholder="Led distributed architecture efforts." rows={2} style={{ padding: "10px 14px", borderRadius: 10, border: "1px solid var(--line)", fontSize: 13, resize: "none", background: "var(--card)", lineHeight: 1.5 }} />
-                </div>
-                <button className="btn btn-primary" style={{ justifyContent: "center" }} onClick={() => {
-                  if (newExp.role) {
-                    setExp(p => [...p, newExp]);
-                    setNewExp({ role: "", co: "", period: "", d: "" });
-                    setShowExpForm(false);
-                  }
-                }}>Save Experience Node</button>
-              </div>
-            )}
-
-            <div className="col gap-2">
-              {exp.map((e, idx) => {
-                const isEditing = editExpIdx === idx;
-                return isEditing ? (
-                  <div key={idx} className="col gap-3" style={{ padding: 16, background: "var(--paper-3)", borderRadius: 14 }}>
-                    <div className="col gap-1">
-                      <label style={{ fontSize: 11.5, fontWeight: 600 }}>Role Title</label>
-                      <input type="text" className="field-input" value={editExpForm.role} onChange={val => setEditExpForm(prev => ({ ...prev, role: val.target.value }))} style={{ padding: "10px 14px", borderRadius: 10, border: "1px solid var(--line)", fontSize: 13, background: "var(--card)" }} />
-                    </div>
-                    <div className="col gap-1">
-                      <label style={{ fontSize: 11.5, fontWeight: 600 }}>Company</label>
-                      <input type="text" className="field-input" value={editExpForm.co} onChange={val => setEditExpForm(prev => ({ ...prev, co: val.target.value }))} style={{ padding: "10px 14px", borderRadius: 10, border: "1px solid var(--line)", fontSize: 13, background: "var(--card)" }} />
-                    </div>
-                    <div className="col gap-1">
-                      <label style={{ fontSize: 11.5, fontWeight: 600 }}>Period</label>
-                      <input type="text" className="field-input" value={editExpForm.period} onChange={val => setEditExpForm(prev => ({ ...prev, period: val.target.value }))} style={{ padding: "10px 14px", borderRadius: 10, border: "1px solid var(--line)", fontSize: 13, background: "var(--card)" }} />
-                    </div>
-                    <div className="col gap-1">
-                      <label style={{ fontSize: 11.5, fontWeight: 600 }}>Description</label>
-                      <textarea className="field-input" value={editExpForm.d} onChange={val => setEditExpForm(prev => ({ ...prev, d: val.target.value }))} rows={2} style={{ padding: "10px 14px", borderRadius: 10, border: "1px solid var(--line)", fontSize: 13, resize: "none", background: "var(--card)", lineHeight: 1.5 }} />
-                    </div>
-                    <div className="row gap-2">
-                      <button className="btn btn-primary" style={{ flex: 1, justifyContent: "center" }} onClick={() => {
-                        if (editExpForm.role) {
-                          setExp(prev => prev.map((item, i) => i === idx ? editExpForm : item));
-                          setEditExpIdx(null);
-                        }
-                      }}>Save Changes</button>
-                      <button className="btn btn-ghost" style={{ flex: 1, justifyContent: "center" }} onClick={() => setEditExpIdx(null)}>Cancel</button>
-                    </div>
-                  </div>
-                ) : (
-                  <div key={idx} style={{ padding: 14, background: "var(--paper-2)", borderRadius: 12, border: "1px solid var(--line)" }} className="col gap-1">
-                    <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
-                      <div className="col gap-1">
-                        <div style={{ fontSize: 14, fontWeight: 600 }}>{e.role}</div>
-                        <div className="mono tabular" style={{ fontSize: 10, color: "var(--ink-3)" }}>{e.period}</div>
-                      </div>
-                      <div className="row gap-1">
-                        <button className="btn btn-icon btn-ghost" style={{ padding: 4 }} onClick={() => {
-                          setEditExpIdx(idx);
-                          setEditExpForm({ role: e.role, co: e.co, period: e.period, d: e.d });
-                        }} aria-label="Edit experience"><Icon name="edit" size={13} /></button>
-                        <button className="btn btn-icon btn-ghost" style={{ padding: 4, color: "var(--bad)" }} onClick={() => {
-                          setExp(prev => prev.filter((_, i) => i !== idx));
-                        }} aria-label="Delete experience"><Icon name="x" size={13} /></button>
-                      </div>
-                    </div>
-                    <div style={{ fontSize: 12, color: "var(--ink-2)", fontWeight: 500 }}>{e.co}</div>
-                    <p style={{ fontSize: 12.5, color: "var(--ink-3)", margin: "4px 0 0" }}>{e.d}</p>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+          ))}
         </div>
 
-        {/* RIGHT COLUMN: CURRENT PROFILE VISUALIZATION */}
-        <div className="col gap-6" style={{ position: "sticky", top: 24 }}>
-          {/* SECTION 2 — IDENTITY PREVIEW CARD */}
-          <div className="card col gap-4" style={{ padding: 28, background: "var(--card)", boxShadow: "var(--shadow-lg)", border: "1.5px solid var(--line)" }}>
-            <div className="eyebrow" style={{ color: "var(--ink-4)" }}>Dynamic Knowledge Node</div>
-            
-            <div className="row gap-4" style={{ alignItems: "center", flexWrap: "wrap" }}>
-              <div style={{ width: 72, height: 72, borderRadius: 20, background: "var(--accent-soft)", color: "var(--accent)", display: "grid", placeItems: "center" }}>
-                <Icon name="user" size={32} />
-              </div>
-              <div className="col gap-1">
-                <div className="display" style={{ fontSize: 36, color: "var(--ink)", lineHeight: 1 }}>{ov.name || "Candidate Node"}</div>
-                <div className="mono" style={{ fontSize: 13, color: "var(--accent)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.12em" }}>
-                  {ov.targetRole || "Role Descriptor Pending"}
-                </div>
-              </div>
+        {status === "done" && (
+          <motion.div initial={{opacity:0,y:-10}} animate={{opacity:1,y:0}} style={{ padding: 16, background: "var(--green-soft)", color: "var(--green-ink)", borderRadius: 12, marginBottom: 24, display: "flex", alignItems: "center", gap: 12, border: "1px solid var(--green)" }}>
+            <Icon name="check" size={18} /><div style={{fontWeight:600}}>Saved successfully!</div>
+          </motion.div>
+        )}
+        {status === "error" && (
+          <motion.div initial={{opacity:0,y:-10}} animate={{opacity:1,y:0}} style={{ padding: 16, background: "var(--bad-soft)", color: "var(--bad)", borderRadius: 12, marginBottom: 24, border: "1px solid var(--bad)" }}>
+            An error occurred.
+          </motion.div>
+        )}
+
+        {activeTab === "resume" && (
+          <motion.div initial={{opacity:0}} animate={{opacity:1}} className="card col gap-4" style={{ padding: "64px 32px", alignItems: "center", textAlign: "center", border: "2px dashed var(--line)", background: "var(--paper-2)" }}>
+            <div style={{ width: 64, height: 64, borderRadius: 16, background: "var(--teal-soft)", color: "var(--teal)", display: "grid", placeItems: "center" }}><Icon name="upload" size={28} /></div>
+            <div style={{ fontWeight: 600, fontSize: 18 }}>Drop a fresh Resume PDF</div>
+            <div style={{ fontSize: 14, color: "var(--ink-3)", maxWidth: 360, lineHeight: 1.5 }}>Our ingestion agent discovers skills, roles, and projects and maps them into your graph.</div>
+            <input type="file" accept=".pdf" onChange={e => e.target.files?.[0] && ingestResume(e.target.files[0])} style={{ display: "none" }} id="pdf-in" />
+            <button className="btn btn-primary" style={{ marginTop: 16, padding: "12px 32px", fontSize: 15 }} onClick={() => document.getElementById("pdf-in")?.click()}>Select PDF File</button>
+            {status === "loading" && <div className="mono pulse" style={{ fontSize: 12, marginTop: 16 }}>Agent parsing resume…</div>}
+          </motion.div>
+        )}
+
+        {activeTab === "manual" && (
+          <motion.div initial={{opacity:0}} animate={{opacity:1}} className="col gap-8">
+            <div className="card col gap-4" style={{ padding: 24 }}>
+              <h3 style={{ fontSize: 16, fontWeight: 600, display: "flex", gap: 8, alignItems: "center" }}><Icon name="spark" size={16}/> Add Skill</h3>
+              <input className="field-input" placeholder="Skill name" value={skillForm.n} onChange={v => setSkillForm({...skillForm, n: v.target.value})} />
+              <select className="field-input" value={skillForm.cat} onChange={v => setSkillForm({...skillForm, cat: v.target.value})}>
+                <option value="technical">Technical</option>
+                <option value="soft">Soft Skill</option>
+                <option value="tool">Tool / Utility</option>
+                <option value="language">Language</option>
+                <option value="framework">Framework</option>
+              </select>
+              <button className="btn btn-primary" style={{alignSelf:"flex-start",padding:"10px 24px"}} onClick={() => addManual("skill", skillForm)} disabled={status==="loading"}>Add Skill</button>
             </div>
-
-            <div style={{ borderTop: "1px dashed var(--line)", margin: "4px 0" }} />
-
-            <div className="row gap-4" style={{ fontSize: 13, color: "var(--ink-2)", flexWrap: "wrap" }}>
-              {ov.email && <div className="row gap-2"><Icon name="mail" size={13} style={{ color: "var(--ink-3)" }} /> {ov.email}</div>}
-              {ov.phone && <div className="row gap-2"><Icon name="phone" size={13} style={{ color: "var(--ink-3)" }} /> {ov.phone}</div>}
-              {ov.location && <div className="row gap-2"><Icon name="location" size={13} style={{ color: "var(--ink-3)" }} /> {ov.location}</div>}
+            <div className="card col gap-4" style={{ padding: 24 }}>
+              <h3 style={{ fontSize: 16, fontWeight: 600, display: "flex", gap: 8, alignItems: "center" }}><Icon name="brief" size={16}/> Add Experience</h3>
+              <input className="field-input" placeholder="Role Title" value={expForm.role} onChange={v => setExpForm({...expForm, role: v.target.value})} />
+              <input className="field-input" placeholder="Company" value={expForm.co} onChange={v => setExpForm({...expForm, co: v.target.value})} />
+              <input className="field-input" placeholder="Period (e.g. 2022-2024)" value={expForm.period} onChange={v => setExpForm({...expForm, period: v.target.value})} />
+              <textarea className="field-input" placeholder="Description" rows={3} value={expForm.d} onChange={v => setExpForm({...expForm, d: v.target.value})} />
+              <button className="btn btn-primary" style={{alignSelf:"flex-start",padding:"10px 24px"}} onClick={() => addManual("exp", expForm)} disabled={status==="loading"}>Add Experience</button>
             </div>
+            <div className="card col gap-4" style={{ padding: 24 }}>
+              <h3 style={{ fontSize: 16, fontWeight: 600, display: "flex", gap: 8, alignItems: "center" }}><Icon name="layers" size={16}/> Add Project</h3>
+              <input className="field-input" placeholder="Project Title" value={projForm.title} onChange={v => setProjForm({...projForm, title: v.target.value})} />
+              <input className="field-input" placeholder="Stack (comma-separated)" value={projForm.stack} onChange={v => setProjForm({...projForm, stack: v.target.value})} />
+              <input className="field-input" placeholder="Repo URL (optional)" value={projForm.repo} onChange={v => setProjForm({...projForm, repo: v.target.value})} />
+              <textarea className="field-input" placeholder="Impact / Description" rows={3} value={projForm.impact} onChange={v => setProjForm({...projForm, impact: v.target.value})} />
+              <button className="btn btn-primary" style={{alignSelf:"flex-start",padding:"10px 24px"}} onClick={() => addManual("project", projForm)} disabled={status==="loading"}>Add Project</button>
+            </div>
+          </motion.div>
+        )}
 
-            {ov.summary && (
-              <p className="italic-serif" style={{ fontSize: 18, color: "var(--ink-2)", lineHeight: 1.6, margin: "12px 0 0" }}>
-                "{ov.summary}"
+        {activeTab === "raw" && (
+          <motion.div initial={{opacity:0}} animate={{opacity:1}} className="card col gap-4" style={{ padding: 24 }}>
+            <div className="eyebrow">Raw Text Aggregator</div>
+            <textarea className="field-input" placeholder="Paste unstructured text from LinkedIn, personal websites, or notes…" rows={16} value={rawText} onChange={v => setRawText(v.target.value)} style={{ fontSize: 14, lineHeight: 1.6 }} />
+            <button className="btn btn-primary" style={{ padding: 16, fontSize: 15 }} onClick={ingestRaw} disabled={status==="loading"}>
+              {status === "loading" ? "Processing…" : "Sync Raw Context"}
+            </button>
+          </motion.div>
+        )}
+
+        {activeTab === "template" && (
+          <motion.div initial={{opacity:0}} animate={{opacity:1}} className="col gap-4">
+            <div className="card" style={{ padding: 24, background: "var(--purple-soft)", border: "1px solid var(--purple)" }}>
+              <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 6 }}>Resume Template</h3>
+              <p style={{ fontSize: 13.5, color: "var(--ink-2)", lineHeight: 1.6 }}>
+                Paste your preferred resume format here (plain text or Markdown). When the agent generates a tailored resume, it will follow this structure — section order, headings, and layout — and fill it in with your profile and the job's requirements.
               </p>
-            )}
-
-            {/* EXTRACTED NODES (SKILLS) */}
-            <div style={{ borderTop: "1px dashed var(--line)", margin: "12px 0 4px" }} />
-            <div className="col gap-2">
-              <div className="eyebrow" style={{ fontSize: 9 }}>Extracted Skill Nodes</div>
-              <div className="row gap-1" style={{ flexWrap: "wrap" }}>
-                {profileData?.skills?.length ? (
-                  profileData.skills.slice(0, 24).map((sk: any, idx: number) => {
-                    const tones = ["blue", "purple", "orange", "pink", "green", "teal"];
-                    const tone = tones[idx % tones.length];
-                    return (
-                      <span key={idx} className="pill" style={{ background: `var(--${tone}-soft)`, color: `var(--${tone}-ink)`, border: `1px solid var(--${tone})`, fontSize: 11, fontWeight: 500 }}>
-                        {sk.n}
-                      </span>
-                    );
-                  })
-                ) : (
-                  <span style={{ fontSize: 12, color: "var(--ink-3)" }}>No skills mapped. Drop a resume to populate.</span>
+            </div>
+            <div className="card col gap-4" style={{ padding: 24 }}>
+              <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-2)" }}>Template content</span>
+                {template && <span className="pill mono" style={{ fontSize: 10, background: "var(--green-soft)", color: "var(--green-ink)", border: "1px solid var(--green)" }}>Template saved</span>}
+              </div>
+              <textarea
+                className="field-input"
+                placeholder={`Paste your resume template here. For example:\n\n# [Name]\n[Contact info]\n\n## Summary\n[2-3 sentence professional summary]\n\n## Experience\n### [Role] — [Company] ([Period])\n- [Bullet points]\n\n## Projects\n### [Project Name]\n- Stack: ...\n- Impact: ...\n\n## Skills\n[Comma-separated list]`}
+                rows={24}
+                value={template}
+                onChange={e => setTemplate(e.target.value)}
+                style={{ fontSize: 13, lineHeight: 1.65, fontFamily: "var(--font-mono)" }}
+              />
+              <div className="row gap-3" style={{ alignItems: "center" }}>
+                <button className="btn btn-primary" style={{ padding: "12px 28px", fontSize: 14 }} onClick={saveTemplate} disabled={status==="loading"}>
+                  {status === "loading" ? "Saving…" : "Save Template"}
+                </button>
+                {template && (
+                  <button className="btn btn-ghost" style={{ fontSize: 13 }} onClick={() => { setTemplate(""); }}>
+                    Clear
+                  </button>
                 )}
+                <span style={{ fontSize: 12, color: "var(--ink-4)" }}>{template.length} chars</span>
               </div>
             </div>
-
-            {/* EXPERIENCE TIMELINE DISPLAY */}
-            {exp.length > 0 && (
-              <>
-                <div style={{ borderTop: "1px dashed var(--line)", margin: "16px 0 4px" }} />
-                <div className="col gap-3">
-                  <div className="eyebrow" style={{ fontSize: 9 }}>Experience Timeline</div>
-                  <div className="col gap-3" style={{ borderLeft: "2px solid var(--line)", paddingLeft: 16, marginLeft: 8 }}>
-                    {exp.map((e, idx) => (
-                      <div key={idx} className="col gap-1" style={{ position: "relative" }}>
-                        <div style={{
-                          position: "absolute", left: -21, top: 4,
-                          width: 8, height: 8, borderRadius: "50%",
-                          background: "var(--accent)", border: "2px solid var(--card)"
-                        }} />
-                        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink)" }}>{e.role}</div>
-                        <div style={{ fontSize: 12, color: "var(--accent)", fontWeight: 500 }}>{e.co}</div>
-                        <div className="mono tabular" style={{ fontSize: 10, color: "var(--ink-3)" }}>{e.period}</div>
-                        <div style={{ fontSize: 12, color: "var(--ink-2)", marginTop: 2, lineHeight: 1.4 }}>{e.d}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </>
-            )}
-
-            {/* PROJECTS HIGHLIGHT */}
-            {projects.length > 0 && (
-              <>
-                <div style={{ borderTop: "1px dashed var(--line)", margin: "16px 0 4px" }} />
-                <div className="col gap-3">
-                  <div className="eyebrow" style={{ fontSize: 9 }}>Project Nodes</div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 12 }}>
-                    {projects.map((p, idx) => (
-                      <div key={idx} style={{ padding: 12, borderRadius: 12, background: "var(--paper-2)", border: "1px solid var(--line)" }} className="col gap-1">
-                        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink)" }}>{p.title}</div>
-                        {p.repo && <div className="mono" style={{ fontSize: 10, color: "var(--accent)" }}>{p.repo}</div>}
-                        <div style={{ fontSize: 12, color: "var(--ink-2)", margin: "2px 0" }}>{p.impact}</div>
-                        <div className="row gap-1" style={{ flexWrap: "wrap", marginTop: 4 }}>
-                          {(Array.isArray(p.stack) ? p.stack : [p.stack]).map((s: string, i: number) => (
-                            <span key={i} className="pill" style={{ background: "var(--card)", fontSize: 9 }}>{s}</span>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-
+          </motion.div>
+        )}
       </div>
     </div>
   );
@@ -1530,7 +1295,32 @@ function ApprovalDrawer({ j, port, onClose, onFired }: {
 }) {
   const [firing, setFiring] = useState(false);
   const [done,   setDone]   = useState(false);
-  const pdfSrc = j.asset ? convertFileSrc(j.asset) : null;
+  const [generating, setGenerating] = useState(false);
+  const [pdfBlobUrl, setPdfBlobUrl] = useState<string | null>(null);
+  const [pdfLoadErr, setPdfLoadErr] = useState<string | null>(null);
+
+  const pdfApiUrl = j.asset ? `http://127.0.0.1:${port}/api/v1/leads/${j.job_id}/pdf` : null;
+
+  // Tauri WebView blocks <iframe src="http://..."> for localhost — fetch as blob instead
+  useEffect(() => {
+    if (!pdfApiUrl) { setPdfBlobUrl(null); setPdfLoadErr(null); return; }
+    let revoke: string | null = null;
+    setPdfLoadErr(null);
+    fetch(pdfApiUrl)
+      .then(r => { if (!r.ok) throw new Error(`Server returned ${r.status}`); return r.blob(); })
+      .then(blob => {
+        const url = URL.createObjectURL(blob);
+        revoke = url;
+        setPdfBlobUrl(url);
+      })
+      .catch(err => { setPdfLoadErr(String(err)); setPdfBlobUrl(null); });
+    return () => { if (revoke) URL.revokeObjectURL(revoke); };
+  }, [pdfApiUrl]);
+
+  // Clear generating flag when the lead actually receives its asset (via LEAD_UPDATED WS event)
+  useEffect(() => {
+    if (generating && j.asset) setGenerating(false);
+  }, [j.asset, generating]);
 
   const fire = async () => {
     setFiring(true);
@@ -1540,13 +1330,14 @@ function ApprovalDrawer({ j, port, onClose, onFired }: {
     } catch { setFiring(false); }
   };
 
-  const matchStats = [
-    { label: "Skills overlap",  val: "87%" },
-    { label: "Title match",     val: "92%" },
-    { label: "YoE match",       val: "76%" },
-    { label: "Location fit",    val: "100%" },
-    { label: "GraphRAG score",  val: "0.91" },
-  ];
+  const generatePdf = async () => {
+    setGenerating(true);
+    setPdfBlobUrl(null);
+    setPdfLoadErr(null);
+    await fetch(`http://127.0.0.1:${port}/api/v1/leads/${j.job_id}/generate`, { method: "POST" });
+  };
+
+  const openPdf = () => { if (pdfApiUrl) openUrl(pdfApiUrl); };
 
   return (
     <div className="drawer-backdrop" onClick={onClose} style={{ zIndex: 100 }}>
@@ -1554,11 +1345,7 @@ function ApprovalDrawer({ j, port, onClose, onFired }: {
         initial={{ y: "100%" }} animate={{ y: "15%" }} exit={{ y: "100%" }}
         transition={{ type: "spring", damping: 30, stiffness: 300 }}
         onClick={e => e.stopPropagation()}
-        style={{
-          width: "100%", height: "85vh", position: "fixed", bottom: 0, left: 0,
-          borderTopLeftRadius: 24, borderTopRightRadius: 24, display: "flex", flexDirection: "column",
-          background: "var(--paper)", zIndex: 101,
-        }}>
+        style={{ width: "100%", height: "85vh", position: "fixed", bottom: 0, left: 0, borderTopLeftRadius: 24, borderTopRightRadius: 24, display: "flex", flexDirection: "column", background: "var(--paper)", zIndex: 101 }}>
 
         <div style={{ width: 60, height: 5, background: "var(--ink-4)", borderRadius: 99, margin: "14px auto 0", flexShrink: 0 }} />
 
@@ -1569,39 +1356,131 @@ function ApprovalDrawer({ j, port, onClose, onFired }: {
           </div>
           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
             <span className="pill" style={{ background: `var(--${getTone(j.status)})`, color: `var(--${getTone(j.status)}-ink)` }}>{j.status}</span>
+            <button
+              onClick={() => openUrl(j.url)}
+              title="Open original job posting"
+              style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", borderRadius: 8, fontSize: 11, fontWeight: 600, border: "1px solid var(--teal)", background: "var(--teal-soft)", color: "var(--teal)", cursor: "pointer" }}
+            >
+              <Icon name="external-link" size={12} color="var(--teal)" /> View Posting
+            </button>
             <button className="btn btn-icon" onClick={onClose}><Icon name="x" size={15} /></button>
           </div>
         </div>
 
         <div style={{ flex: 1, overflow: "hidden", display: "grid", gridTemplateColumns: "1.1fr 1fr", minHeight: 0 }}>
+          {/* Left: PDF */}
           <div style={{ padding: 18, borderRight: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 12, overflowY: "auto" }}>
-            <div className="eyebrow">Tailored Resume</div>
-            <div style={{ flex: 1, minHeight: 200 }}>
-              {pdfSrc
-                ? <iframe src={pdfSrc} title="Resume" width="100%" height="100%" style={{ border: "none", borderRadius: 8 }} />
-                : <div style={{ height: "100%", background: "var(--card)", border: "1px solid var(--line)", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--ink-3)", fontSize: 12 }}>
-                    {j.status === "tailoring" ? "Generating tailored resume..." : "No asset generated yet."}
-                  </div>
-              }
+            <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+              <div className="eyebrow">Tailored Resume</div>
+              <div className="row" style={{ gap: 8 }}>
+                {pdfBlobUrl && (
+                  <button onClick={openPdf} title="Open PDF in system viewer / download" style={{
+                    display: "flex", alignItems: "center", gap: 5,
+                    padding: "5px 12px", borderRadius: 8, fontSize: 11, fontWeight: 700,
+                    border: "1px solid var(--teal)", background: "var(--teal-soft)", color: "var(--teal)", cursor: "pointer",
+                  }}>
+                    <Icon name="download" size={12} color="var(--teal)" /> Download PDF
+                  </button>
+                )}
+                <button onClick={generatePdf} disabled={generating} style={{
+                  padding: "5px 12px", borderRadius: 8, fontSize: 11, fontWeight: 700,
+                  border: "1px solid var(--purple)", background: "var(--purple-soft)", color: "var(--purple-ink)", cursor: generating ? "wait" : "pointer",
+                }}>{generating ? "Generating…" : pdfBlobUrl ? "Re-generate" : "Generate PDF"}</button>
+              </div>
+            </div>
+            <div style={{ flex: 1, minHeight: 500 }}>
+              {generating && !pdfBlobUrl && (
+                <div style={{ height: "100%", background: "var(--card)", border: "1px solid var(--line)", borderRadius: 12, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, color: "var(--ink-3)", fontSize: 12 }}>
+                  <div className="mono pulse">AI is tailoring your resume — this takes ~30 seconds…</div>
+                </div>
+              )}
+              {!generating && pdfBlobUrl && (
+                <iframe key={pdfBlobUrl} src={pdfBlobUrl} title="Resume" width="100%" style={{ height: "100%", minHeight: 500, border: "none", borderRadius: 8, display: "block" }} />
+              )}
+              {!generating && !pdfBlobUrl && (
+                <div style={{ height: "100%", background: "var(--card)", border: "1px solid var(--line)", borderRadius: 12, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, color: "var(--ink-3)", fontSize: 12 }}>
+                  {pdfLoadErr
+                    ? <div style={{ color: "var(--bad)", textAlign: "center", padding: "0 24px" }}>Failed to load PDF: {pdfLoadErr}</div>
+                    : <div>{j.status === "tailoring" ? "Generating tailored resume…" : "No resume generated yet."}</div>
+                  }
+                  <button onClick={generatePdf} disabled={generating} style={{ padding: "8px 18px", borderRadius: 8, fontSize: 12, fontWeight: 700, border: "1px solid var(--purple)", background: "var(--purple-soft)", color: "var(--purple-ink)", cursor: "pointer" }}>
+                    Generate PDF
+                  </button>
+                </div>
+              )}
             </div>
           </div>
 
-          <div style={{ padding: 22, display: "flex", flexDirection: "column", gap: 14 }}>
+          {/* Right: Score + actions */}
+          <div style={{ padding: 22, display: "flex", flexDirection: "column", gap: 14, overflowY: "auto" }}>
             <div className="eyebrow">Match Reasoning</div>
-            <div className="card" style={{ padding: "10px 14px" }}>
-              {matchStats.map(ms => (
-                <div key={ms.label} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "6px 0", borderBottom: "1px dashed var(--line)" }}>
-                  <span>{ms.label}</span>
-                  <span style={{ fontWeight: 700, color: "var(--ink)" }}>{ms.val}</span>
+
+            {/* Description */}
+            {j.description && (
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>Job Description</div>
+                <div style={{ fontSize: 12.5, color: "var(--ink-2)", lineHeight: 1.6, background: "var(--paper-3)", borderRadius: 8, padding: "10px 12px", border: "1px solid var(--line)" }}>
+                  {j.description}
                 </div>
-              ))}
+              </div>
+            )}
+
+            {/* Score bar */}
+            <div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: "0.08em" }}>Match Score</span>
+                <span style={{
+                  fontSize: 13, fontWeight: 700,
+                  color:       j.score >= 85 ? "var(--green-ink)" : j.score >= 60 ? "var(--yellow-ink)" : "var(--bad)",
+                  background:  j.score >= 85 ? "var(--green-soft)" : j.score >= 60 ? "var(--yellow-soft)" : "var(--bad-soft)",
+                  padding: "2px 10px", borderRadius: 999,
+                }}>{j.score ?? 0}/100</span>
+              </div>
+              <div style={{ height: 6, background: "var(--paper-3)", borderRadius: 999, marginBottom: 16 }}>
+                <div style={{ height: "100%", borderRadius: 999, width: `${Math.min(100, j.score ?? 0)}%`, background: j.score >= 85 ? "var(--green)" : j.score >= 60 ? "var(--yellow)" : "var(--bad)", transition: "width 0.4s ease" }} />
+              </div>
             </div>
+
+            {j.reason && (
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>Evaluator Reasoning</div>
+                <div style={{ fontSize: 12.5, color: "var(--ink-2)", lineHeight: 1.6, background: "var(--paper)", borderRadius: 10, padding: "10px 12px", border: "1px solid var(--line)" }}>{j.reason}</div>
+              </div>
+            )}
+
+            {j.match_points?.length > 0 && (
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Match Points</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  {j.match_points.map((pt, i) => (
+                    <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 8, fontSize: 12, color: "var(--ink-2)" }}>
+                      <span style={{ color: "var(--ok)", fontWeight: 700, flexShrink: 0 }}>✓</span>
+                      <span style={{ lineHeight: 1.5 }}>{pt}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {j.gaps && j.gaps.length > 0 && (
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Skill Gaps</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  {j.gaps.map((g, i) => (
+                    <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 8, fontSize: 12, color: "var(--ink-2)" }}>
+                      <span style={{ color: "var(--bad)", fontWeight: 700, flexShrink: 0 }}>✗</span>
+                      <span style={{ lineHeight: 1.5 }}>{g}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div style={{ textAlign: "center", padding: "16px 0", marginTop: "auto" }}>
               {done
                 ? <div style={{ fontSize: 20, color: "var(--ok)", fontWeight: 600 }}>✓ Fired — automation running</div>
                 : <button className="btn btn-accent" onClick={fire} disabled={firing} style={{ fontSize: 16, padding: "12px 36px", width: "100%" }}>
-                    {firing ? "Firing..." : "🔥 Fire Application"}
+                    {firing ? "Firing…" : "🔥 Fire Application"}
                   </button>
               }
             </div>
@@ -1617,16 +1496,16 @@ function ApprovalDrawer({ j, port, onClose, onFired }: {
 ══════════════════════════════════════ */
 
 export default function App() {
-  const { conn, port, logs, beat } = useWS();
-  const leads  = useLeads(port);
+  const { conn, port, logs, beat, addLog: wsAddLog } = useWS();
+  const { leads, setLeads } = useLeads(port, wsAddLog);
   const stats  = useGraphStats(port);
-  const [view, setView] = useState<View>("dashboard");
-  const [sel, setSel]   = useState<Lead | null>(null);
+  const [view, setView]           = useState<View>("dashboard");
+  const [sel, setSel]             = useState<Lead | null>(null);
+  // Always pass the live version of the selected lead so the drawer reflects real-time updates
+  const liveSel = sel ? (leads.find(l => l.job_id === sel.job_id) ?? sel) : null;
   const [showSettings, setShowSettings] = useState(false);
-  const [scanning, setScanning] = useState(false);
-  const [scanErr, setScanErr] = useState<string | null>(null);
-
-  const addLog = useCallback((m: string) => { console.log("[profile]", m); }, []);
+  const [scanning, setScanning]   = useState(false);
+  const [scanErr, setScanErr]     = useState<string | null>(null);
 
   useEffect(() => {
     const h = () => setScanning(false);
@@ -1636,51 +1515,57 @@ export default function App() {
 
   const onScan = useCallback(async () => {
     if (!port || scanning) return;
-    setScanning(true);
-    setScanErr(null);
+    setScanning(true); setScanErr(null);
     try {
       const r = await fetch(`http://127.0.0.1:${port}/api/v1/scan`, { method: "POST" });
       if (!r.ok) throw new Error("Backend unreachable");
     } catch (e: any) {
-      setScanErr(e.message || "Scan failed");
-      setScanning(false);
+      setScanErr(e.message || "Scan failed"); setScanning(false);
     }
   }, [port, scanning]);
 
+  const onStopScan = useCallback(async () => {
+    if (!port) return;
+    try { await fetch(`http://127.0.0.1:${port}/api/v1/scan/stop`, { method: "POST" }); }
+    catch { /* ignore */ }
+  }, [port]);
+
+  const deleteLead = useCallback(async (jobId: string) => {
+    if (!port) return;
+    await fetch(`http://127.0.0.1:${port}/api/v1/leads/${jobId}`, { method: "DELETE" });
+    setLeads(prev => prev.filter(l => l.job_id !== jobId));
+  }, [port, setLeads]);
+
   const leadCounts = {
-    total:      leads.length,
-    discovered: leads.filter(l=>l.status==="discovered").length,
-    evaluating: leads.filter(l=>l.status==="evaluating").length,
-    tailoring:  leads.filter(l=>l.status==="tailoring").length,
-    approved:   leads.filter(l=>l.status==="approved").length,
-    applied:    leads.filter(l=>l.status==="applied").length,
+    total:        leads.length,
+    discovered:   leads.filter(l=>l.status==="discovered").length,
+    evaluating:   leads.filter(l=>l.status==="evaluating").length,
+    tailoring:    leads.filter(l=>l.status==="tailoring").length,
+    approved:     leads.filter(l=>l.status==="approved").length,
+    applied:      leads.filter(l=>l.status==="applied").length,
+    interviewing: leads.filter(l=>l.status==="interviewing").length,
+    accepted:     leads.filter(l=>l.status==="accepted").length,
+    rejected:     leads.filter(l=>l.status==="rejected").length,
   };
 
   return (
     <div style={{ display: "flex", height: "100vh", width: "100vw", overflow: "hidden", alignItems: "stretch" }}>
-      <Sidebar
-        view={view}
-        setView={setView}
-        leadCounts={leadCounts}
-        online={conn === "connected"}
-        port={port}
-        beat={beat}
-        onSettings={() => setShowSettings(true)}
-      />
+      <Sidebar view={view} setView={setView} leadCounts={leadCounts} online={conn === "connected"} port={port} beat={beat} onSettings={() => setShowSettings(true)} />
       <div className="app-main">
         <Topbar view={view} />
         <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column", background: "var(--paper)" }}>
-          {view === "dashboard" && <DashboardView leads={leads} logs={logs} setView={setView} openDrawer={setSel} scanning={scanning} onScan={onScan} scanErr={scanErr} />}
-          {view === "pipeline"  && <PipelineView leads={leads} logs={logs} stats={stats} openDrawer={setSel} scanning={scanning} onScan={onScan} />}
+          {view === "dashboard" && <DashboardView leads={leads} logs={logs} setView={setView} openDrawer={setSel} scanning={scanning} onScan={onScan} onStopScan={onStopScan} scanErr={scanErr} />}
+          {view === "pipeline"  && <PipelineView leads={leads} openDrawer={setSel} deleteLead={deleteLead} port={port} />}
           {view === "graph"     && <GraphView stats={stats} />}
           {view === "activity"  && <ActivityView logs={logs} />}
-          {view === "profile"   && port && <ProfileView port={port} addLog={addLog} />}
+          {view === "profile"   && port && <ProfileView port={port} />}
+          {view === "ingestion" && port && <IngestionView port={port} />}
         </div>
       </div>
 
       <AnimatePresence>
-        {sel && port && (
-          <ApprovalDrawer key={sel.job_id} j={sel} port={port} onClose={() => setSel(null)} onFired={() => setSel(null)} />
+        {liveSel && port && (
+          <ApprovalDrawer key={liveSel.job_id} j={liveSel} port={port} onClose={() => setSel(null)} onFired={() => setSel(null)} />
         )}
         {showSettings && port && (
           <SettingsModal key="settings" port={port} onClose={() => setShowSettings(false)} />

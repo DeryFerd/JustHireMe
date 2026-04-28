@@ -64,3 +64,4 @@ src-tauri/resources/bin/chromium/*
 *.sqlite
 *.sqlite3
 BoomBoom/
+scratch/

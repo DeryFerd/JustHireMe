@@ -66,16 +66,22 @@ class EvalSt(TypedDict):
 def evaluator(s: EvalSt) -> EvalSt:
     from agents.evaluator import score as _score
     from db.client import get_discovered_leads, update_lead_score
+    from db.client import get_profile as _get_profile
     leads   = s.get("leads") or get_discovered_leads()
     scored  = []
     approved = []
+    profile = _get_profile()
     try:
         for lead in leads:
             jd     = f"{lead.get('title','')} at {lead.get('company','')} — {lead.get('url','')}"
-            skills = lead.get("skills", [])
-            result = _score(jd, skills)
+            result = _score(jd, profile)
             result["job_id"] = lead["job_id"]
-            update_lead_score(lead["job_id"], result["score"], result["reason"])
+            update_lead_score(
+                lead["job_id"],
+                result["score"],
+                result["reason"],
+                result.get("match_points", [])
+            )
             scored.append(result)
             if result["score"] >= 85:
                 approved.append({**lead, **result})

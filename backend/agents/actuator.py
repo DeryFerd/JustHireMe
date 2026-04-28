@@ -125,7 +125,9 @@ async def _find_submit(p):
 async def _run(job: dict, asset: str, dry_run: bool = False) -> bool:
     from playwright.async_api import async_playwright
     async with async_playwright() as pw:
-        b   = await pw.chromium.launch(headless=False, slow_mo=80)
+        from db.client import get_setting as _gs
+        _headed = _gs("headed_browser", "false").lower() == "true"
+        b   = await pw.chromium.launch(headless=not _headed, slow_mo=80 if _headed else 20)
         ctx = await b.new_context(
             viewport={"width": 1280, "height": 900},
             user_agent=(
