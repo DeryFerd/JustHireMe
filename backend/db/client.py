@@ -374,14 +374,11 @@ def delete_skill(sid: str):
     from kuzu import Connection
     c = Connection(db)
     try:
-        c.execute("MATCH (s:Skill {id: $id})-[r]-() DELETE r", {"id": sid})
+        c.execute("MATCH (s:Skill)-[r]-() WHERE s.id = $id DELETE r", {"id": sid})
     except Exception:
         pass
     c2 = Connection(db)
-    try:
-        c2.execute("MATCH (s:Skill {id: $id}) DELETE s", {"id": sid})
-    except Exception:
-        pass
+    c2.execute("MATCH (s:Skill) WHERE s.id = $id DELETE s", {"id": sid})
 
 
 # ── CRUD: Experience ──────────────────────────────────────────────
@@ -431,14 +428,11 @@ def delete_experience(eid: str):
     from kuzu import Connection
     c = Connection(db)
     try:
-        c.execute("MATCH (e:Experience {id: $id})-[r]-() DELETE r", {"id": eid})
+        c.execute("MATCH (e:Experience)-[r]-() WHERE e.id = $id DELETE r", {"id": eid})
     except Exception:
         pass
     c2 = Connection(db)
-    try:
-        c2.execute("MATCH (e:Experience {id: $id}) DELETE e", {"id": eid})
-    except Exception:
-        pass
+    c2.execute("MATCH (e:Experience) WHERE e.id = $id DELETE e", {"id": eid})
 
 
 # ── CRUD: Projects ────────────────────────────────────────────────
@@ -493,14 +487,11 @@ def delete_project(pid: str):
     from kuzu import Connection
     c = Connection(db)
     try:
-        c.execute("MATCH (p:Project {id: $id})-[r]-() DELETE r", {"id": pid})
+        c.execute("MATCH (p:Project)-[r]-() WHERE p.id = $id DELETE r", {"id": pid})
     except Exception:
         pass
     c2 = Connection(db)
-    try:
-        c2.execute("MATCH (p:Project {id: $id}) DELETE p", {"id": pid})
-    except Exception:
-        pass
+    c2.execute("MATCH (p:Project) WHERE p.id = $id DELETE p", {"id": pid})
 
 
 # ── CRUD: Candidate ──────────────────────────────────────────────

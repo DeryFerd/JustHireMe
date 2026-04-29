@@ -787,44 +787,72 @@ function GraphView({ stats }: { stats: GraphStats }) {
     { key: "Project",    count: stats.project ?? 0,    tone: "pink" },
   ];
   const total = mappedStats.reduce((s, x) => s + x.count, 0);
+  const evidence = (stats.skill ?? 0) + (stats.experience ?? 0) + (stats.project ?? 0);
+  const nodeCopy: Record<string, { label: string; detail: string; icon: string }> = {
+    Candidate:  { label: "Candidate", detail: "Root profile", icon: "user" },
+    Skill:      { label: "Skills", detail: "Tools and capabilities", icon: "spark" },
+    Experience: { label: "Experience", detail: "Roles and companies", icon: "brief" },
+    Project:    { label: "Projects", detail: "Proof of work", icon: "layers" },
+    JobLead:    { label: "Job Leads", detail: "Openings in scope", icon: "search" },
+  };
   return (
-    <div className="scroll" style={{ padding: 24, flex: 1, height: "100%", minHeight: 0 }}>
-      <div className="card" style={{ padding: "26px 28px", marginBottom: 18, background: "var(--green-soft)" }}>
-        <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 16 }}>
-          <div className="col gap-2" style={{ maxWidth: 540 }}>
-            <span className="eyebrow">Local kùzu graph</span>
-            <h1 style={{ fontSize: 44 }}>Your portable <span className="italic-serif">knowledge brain</span></h1>
-            <div style={{ fontSize: 13.5, color: "var(--ink-2)", lineHeight: 1.55 }}>
-              Every skill, project, and lead is a node. Edges are inferred by GraphRAG. The agent uses this graph to score each opening.
+    <div className="scroll graph-page">
+      <div className="graph-shell">
+        <div className="card graph-overview">
+          <div className="graph-overview-copy">
+            <span className="eyebrow">Local kuzu graph</span>
+            <h1 style={{ fontSize: 34 }}>Knowledge Map</h1>
+            <p>Candidate evidence, job leads, and project proof in one local graph.</p>
+          </div>
+          <div className="graph-overview-stats">
+            <div>
+              <span className="eyebrow">Total nodes</span>
+              <div className="display tabular graph-total">{total}</div>
+            </div>
+            <div className="graph-mini-stats">
+              <div><span>{evidence}</span><small>Evidence nodes</small></div>
+              <div><span>{stats.joblead ?? 0}</span><small>Job leads</small></div>
             </div>
           </div>
-          <div className="col" style={{ alignItems: "flex-end", gap: 4 }}>
-            <span className="eyebrow">Total nodes</span>
-            <span className="display tabular" style={{ fontSize: 56, color: "var(--green-ink)", lineHeight: 1 }}>{total}</span>
-          </div>
         </div>
-      </div>
-      <div className="grid-2" style={{ marginBottom: 18 }}>
-        <div className="card" style={{ padding: 24, display: "flex", flexDirection: "column", alignItems: "center" }}>
-          <div style={{ width: "100%" }}>
-            <h3 style={{ marginBottom: 4 }}>Topology</h3>
-            <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 12 }}>5-vertex schema</div>
-          </div>
-          <PentagonGraph stats={mappedStats} />
-        </div>
-        <div className="col gap-2">
-          {mappedStats.map(s => (
-            <div key={s.key} style={{ padding: 18, borderRadius: 14, background: `var(--${s.tone}-soft)`, border: `1px solid var(--${s.tone})` }}>
-              <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-                <div className="col gap-1">
-                  <span className="eyebrow" style={{ color: `var(--${s.tone}-ink)` }}>{s.key}</span>
-                  <div style={{ fontSize: 13, color: "var(--ink-2)" }}>{{ Candidate: "You — the root node", Experience: "Roles & companies", Project: "Things you've built", Skill: "Capabilities & tooling", JobLead: "Discovered openings" }[s.key]}</div>
-                </div>
-                <div className="display tabular" style={{ fontSize: 36, color: `var(--${s.tone}-ink)` }}>{s.count}</div>
+
+        <div className="graph-layout">
+          <div className="card graph-topology-card">
+            <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start", width: "100%" }}>
+              <div>
+                <h3 style={{ marginBottom: 4 }}>Topology</h3>
+                <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)", letterSpacing: "0.1em", textTransform: "uppercase" }}>5-vertex schema</div>
               </div>
+              <span className="pill mono" style={{ background: "var(--green-soft)", color: "var(--green-ink)", border: "1px solid var(--green)" }}>live</span>
             </div>
-          ))}
+            <PentagonGraph stats={mappedStats} />
+          </div>
+
+          <div className="graph-node-list">
+            {mappedStats.map(s => {
+              const copy = nodeCopy[s.key];
+              const pct = total ? Math.round((s.count / total) * 100) : 0;
+              return (
+                <div key={s.key} className="card-flat graph-node-card">
+                  <div className="graph-node-icon" style={{ background: `var(--${s.tone}-soft)`, color: `var(--${s.tone}-ink)` }}>
+                    <Icon name={copy.icon} size={16} />
+                  </div>
+                  <div className="graph-node-main">
+                    <div className="row" style={{ justifyContent: "space-between", gap: 12 }}>
+                      <div>
+                        <div style={{ fontWeight: 700 }}>{copy.label}</div>
+                        <div style={{ fontSize: 12, color: "var(--ink-3)" }}>{copy.detail}</div>
+                      </div>
+                      <div className="display tabular" style={{ fontSize: 34, color: `var(--${s.tone}-ink)` }}>{s.count}</div>
+                    </div>
+                    <div className="graph-node-meter"><span style={{ width: `${pct}%`, background: `var(--${s.tone})` }} /></div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
+
       </div>
     </div>
   );
@@ -898,7 +926,12 @@ function ActivityView({ logs }: { logs: LogLine[] }) {
    PROFILE VIEW
 ══════════════════════════════════════ */
 
-function ProfileView({ port }: { port: number }) {
+const stackItems = (stack: any): string[] =>
+  (Array.isArray(stack) ? stack : String(stack || "").split(","))
+    .map((s: string) => s.trim())
+    .filter(Boolean);
+
+function ProfileView({ port, setView }: { port: number; setView: (v: View) => void }) {
   const [profile, setProfile] = useState<any>(null);
   const [editId, setEditId] = useState<string | null>(null);
   const [editData, setEditData] = useState<any>(null);
@@ -916,8 +949,13 @@ function ProfileView({ port }: { port: number }) {
 
   const deleteItem = async (type: string, id: string) => {
     if (!window.confirm("Delete this item?")) return;
-    await fetch(`http://127.0.0.1:${port}/api/v1/profile/${type}/${id}`, { method: "DELETE" });
-    fetchProfile();
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/v1/profile/${type}/${id}`, { method: "DELETE" });
+      if (!res.ok) console.error("Delete failed:", res.status);
+    } catch (err) {
+      console.error("Delete error:", err);
+    }
+    await fetchProfile();
   };
 
   const saveEdit = async (type: string, id: string) => {
@@ -934,23 +972,35 @@ function ProfileView({ port }: { port: number }) {
     setEditingCandidate(false); fetchProfile();
   };
 
+  const skills = profile?.skills || [];
+  const exp = profile?.exp || [];
+  const projects = profile?.projects || [];
+  const evidenceCount = skills.length + exp.length + projects.length;
+  const topStacks = Array.from(new Set<string>(projects.flatMap((p: any) => stackItems(p.stack)))).slice(0, 10);
+  const visibleStacks = topStacks.slice(0, 6);
+
   return (
-    <div className="scroll col" style={{ flex: 1, padding: "32px 40px", background: "var(--paper)", height: "100%", overflow: "auto" }}>
-      <div style={{ maxWidth: 960, margin: "0 auto", width: "100%" }}>
-        <div className="card" style={{ padding: "32px 40px", marginBottom: 24, background: "linear-gradient(135deg, var(--purple-soft) 0%, var(--pink-soft) 100%)", border: "1px solid var(--purple)" }}>
-          <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
-            <span className="eyebrow" style={{ color: "var(--purple-ink)" }}>Identity Context</span>
-            {!editingCandidate && (
-              <button className="btn-icon" style={{ background: "var(--paper)", border: "1px solid var(--line)", padding: "6px 10px", borderRadius: 8, fontSize: 12, fontWeight: 600, color: "var(--ink-2)", cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}
-                onClick={() => { setEditingCandidate(true); setCandForm({ n: profile?.n || "", s: profile?.s || "" }); }}>
-                <Icon name="edit" size={13} /> Edit
-              </button>
-            )}
-          </div>
+    <div className="scroll profile-page">
+      <div className="profile-shell">
+        <div className="profile-hero">
+          <div className="card profile-identity-card">
+            <div className="profile-identity-head">
+              <div className="profile-avatar">{(profile?.n || "C").slice(0, 1).toUpperCase()}</div>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <span className="eyebrow">Identity Context</span>
+                <h1 style={{ fontSize: 34, marginTop: 4, overflowWrap: "anywhere" }}>{profile?.n || "Candidate Profile"}</h1>
+              </div>
+              {!editingCandidate && (
+                <button className="btn" onClick={() => { setEditingCandidate(true); setCandForm({ n: profile?.n || "", s: profile?.s || "" }); }}>
+                  <Icon name="edit" size={13} /> Edit
+                </button>
+              )}
+            </div>
+
           {editingCandidate ? (
-            <div className="col gap-3" style={{ marginTop: 16 }}>
+            <div className="col gap-3" style={{ marginTop: 18 }}>
               <input className="field-input" placeholder="Your full name" value={candForm.n} onChange={e => setCandForm({ ...candForm, n: e.target.value })} style={{ fontSize: 18, fontWeight: 600 }} />
-              <textarea className="field-input" placeholder="Professional summary / target role — agents use this for scoring" rows={3} value={candForm.s} onChange={e => setCandForm({ ...candForm, s: e.target.value })} style={{ fontSize: 14, lineHeight: 1.6 }} />
+              <textarea className="field-input" placeholder="Professional summary / target role - agents use this for scoring" rows={4} value={candForm.s} onChange={e => setCandForm({ ...candForm, s: e.target.value })} style={{ fontSize: 14, lineHeight: 1.6 }} />
               <div className="row gap-2">
                 <button className="btn btn-primary" style={{ padding: "10px 24px" }} onClick={saveCandidate}>Save Identity</button>
                 <button className="btn btn-ghost" onClick={() => setEditingCandidate(false)}>Cancel</button>
@@ -958,48 +1008,87 @@ function ProfileView({ port }: { port: number }) {
             </div>
           ) : (
             <>
-              <h2 style={{ fontSize: 40, fontWeight: 700, letterSpacing: "-0.02em", marginTop: 4 }}>{profile?.n || "Candidate Profile"}</h2>
-              <p style={{ fontSize: 15, color: "var(--ink-2)", marginTop: 12, lineHeight: 1.6, maxWidth: 600 }}>{profile?.s || "Add your name and target role summary above — this drives how agents score jobs for you."}</p>
-              <div className="row gap-3" style={{ marginTop: 24 }}>
-                <div className="pill mono" style={{ background: "var(--paper)", color: "var(--ink-2)" }}>{profile?.skills?.length || 0} SKILLS</div>
-                <div className="pill mono" style={{ background: "var(--paper)", color: "var(--ink-2)" }}>{profile?.exp?.length || 0} ROLES</div>
-                <div className="pill mono" style={{ background: "var(--paper)", color: "var(--ink-2)" }}>{profile?.projects?.length || 0} PROJECTS</div>
+              <p className="profile-summary">{profile?.s || "Add your name and target role summary above. This becomes the anchor for scoring and document generation."}</p>
+              <div className="profile-pill-row">
+                <span className="pill mono">{skills.length} SKILLS</span>
+                <span className="pill mono">{exp.length} ROLES</span>
+                <span className="pill mono">{projects.length} PROJECTS</span>
               </div>
             </>
           )}
+          </div>
+
+          <div className="profile-side-panel">
+            <div className="card profile-signal-card">
+              <span className="eyebrow">Graph Signal</span>
+              <div className="display tabular" style={{ fontSize: 52, color: "var(--pink-ink)", marginTop: 8 }}>{evidenceCount}</div>
+              <div style={{ fontSize: 12.5, color: "var(--ink-3)", lineHeight: 1.55 }}>Evidence items available for matching and package generation.</div>
+              {visibleStacks.length > 0 && (
+                <div className="profile-stack-mini">
+                  {visibleStacks.map(s => <span key={s} className="pill">{s}</span>)}
+                </div>
+              )}
+            </div>
+            <button className="btn btn-primary" style={{ width: "100%", padding: "11px 16px" }} onClick={() => setView("ingestion")}>
+              <Icon name="plus" size={14} /> Add Context
+            </button>
+          </div>
         </div>
 
-        <div className="col gap-6" style={{ paddingBottom: 40 }}>
-          {/* Skills */}
-          <div className="card" style={{ padding: 28 }}>
-            <div className="row gap-3" style={{ marginBottom: 20 }}>
-              <div style={{ width: 32, height: 32, borderRadius: 10, background: "var(--blue)", color: "var(--blue-ink)", display: "grid", placeItems: "center" }}><Icon name="spark" size={16} /></div>
-              <h3 style={{ fontSize: 18, fontWeight: 600 }}>Verified Skills</h3>
+        <div className="profile-stat-grid">
+          {[
+            { label: "Skills", value: skills.length, tone: "blue", icon: "spark" },
+            { label: "Experience", value: exp.length, tone: "orange", icon: "brief" },
+            { label: "Projects", value: projects.length, tone: "pink", icon: "layers" },
+            { label: "Stack Tags", value: topStacks.length, tone: "teal", icon: "key" },
+          ].map(item => (
+            <div key={item.label} className="card-flat profile-stat-card">
+              <div className="profile-stat-icon" style={{ background: `var(--${item.tone}-soft)`, color: `var(--${item.tone}-ink)` }}>
+                <Icon name={item.icon} size={15} />
+              </div>
+              <div>
+                <div className="display tabular" style={{ fontSize: 32, color: `var(--${item.tone}-ink)` }}>{item.value}</div>
+                <div className="eyebrow">{item.label}</div>
+              </div>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 12 }}>
-              {(profile?.skills?.length || 0) === 0 && <div style={{ fontSize: 13, color: "var(--ink-4)" }}>No skills yet.</div>}
-              {profile?.skills?.map((s: any) => (
-                <div key={s.id} className="row" style={{ padding: "10px 14px", background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 12, justifyContent: "space-between", alignItems: "center" }}>
-                  <div className="row gap-2">
+          ))}
+        </div>
+
+        <div className="profile-content-grid">
+          <section className="card profile-section">
+            <div className="profile-section-head">
+              <div>
+                <span className="eyebrow">Capability Map</span>
+                <h3>Verified Skills</h3>
+              </div>
+              <span className="pill mono">{skills.length}</span>
+            </div>
+            <div className="profile-skill-grid">
+              {skills.length === 0 && <div className="profile-empty">No skills yet.</div>}
+              {skills.map((s: any) => (
+                <div key={s.id} className="profile-skill-chip">
+                  <div className="row gap-2" style={{ minWidth: 0 }}>
                     <Icon name="check" size={14} color="var(--blue)" />
-                    <span style={{ fontSize: 14, fontWeight: 500 }}>{s.n}</span>
+                    <span>{s.n}</span>
                   </div>
-                  <button className="btn-icon" style={{ background: "var(--paper)", border: "1px solid var(--line)", padding: 6, borderRadius: 8, color: "var(--bad)" }} onClick={() => deleteItem("skill", s.id)} title="Delete"><Icon name="trash" size={13} /></button>
+                  <button className="btn-icon profile-mini-action" onClick={() => deleteItem("skill", s.id)} title="Delete"><Icon name="trash" size={13} /></button>
                 </div>
               ))}
             </div>
-          </div>
+          </section>
 
-          {/* Experience */}
-          <div className="card" style={{ padding: 28 }}>
-            <div className="row gap-3" style={{ marginBottom: 20 }}>
-              <div style={{ width: 32, height: 32, borderRadius: 10, background: "var(--orange)", color: "var(--orange-ink)", display: "grid", placeItems: "center" }}><Icon name="brief" size={16} /></div>
-              <h3 style={{ fontSize: 18, fontWeight: 600 }}>Career Timeline</h3>
+          <section className="card profile-section profile-section-wide">
+            <div className="profile-section-head">
+              <div>
+                <span className="eyebrow">Work Evidence</span>
+                <h3>Career Timeline</h3>
+              </div>
+              <span className="pill mono">{exp.length}</span>
             </div>
-            <div className="col gap-3">
-              {(profile?.exp?.length || 0) === 0 && <div style={{ fontSize: 13, color: "var(--ink-4)" }}>No experience recorded.</div>}
-              {profile?.exp?.map((e: any) => (
-                <div key={e.id} style={{ padding: "20px 24px", background: "var(--paper-3)", borderRadius: 16, border: "1px solid var(--line)" }}>
+            <div className="profile-timeline">
+              {exp.length === 0 && <div className="profile-empty">No experience recorded.</div>}
+              {exp.map((e: any) => (
+                <div key={e.id} className="profile-timeline-item">
                   {editId === e.id ? (
                     <div className="col gap-3">
                       <div className="grid-2 gap-3">
@@ -1015,16 +1104,16 @@ function ProfileView({ port }: { port: number }) {
                     </div>
                   ) : (
                     <div className="col gap-1">
-                      <div className="row" style={{ justifyContent: "space-between" }}>
+                      <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
                         <div className="col">
                           <div style={{ fontSize: 16, fontWeight: 600 }}>{e.role}</div>
                           <div className="row gap-2" style={{ fontSize: 13, color: "var(--ink-2)", marginTop: 3 }}>
-                            <span>{e.co}</span><span style={{ color: "var(--ink-4)" }}>·</span><span className="mono" style={{ fontSize: 11 }}>{e.period}</span>
+                            <span>{e.co}</span><span style={{ color: "var(--ink-4)" }}>-</span><span className="mono" style={{ fontSize: 11 }}>{e.period}</span>
                           </div>
                         </div>
                         <div className="row gap-2">
-                          <button className="btn-icon" style={{ background: "var(--paper)", border: "1px solid var(--line)", padding: 6, borderRadius: 8 }} onClick={() => { setEditId(e.id); setEditData({ ...e }); }}><Icon name="edit" size={14} /></button>
-                          <button className="btn-icon" style={{ background: "var(--paper)", border: "1px solid var(--line)", padding: 6, borderRadius: 8, color: "var(--bad)" }} onClick={() => deleteItem("experience", e.id)}><Icon name="trash" size={14} /></button>
+                          <button className="btn-icon profile-mini-action" onClick={() => { setEditId(e.id); setEditData({ ...e }); }}><Icon name="edit" size={14} /></button>
+                          <button className="btn-icon profile-mini-action profile-danger" onClick={() => deleteItem("experience", e.id)}><Icon name="trash" size={14} /></button>
                         </div>
                       </div>
                       {e.d && <div style={{ fontSize: 13.5, color: "var(--ink-2)", lineHeight: 1.6, marginTop: 10, whiteSpace: "pre-wrap" }}>{e.d}</div>}
@@ -1033,18 +1122,20 @@ function ProfileView({ port }: { port: number }) {
                 </div>
               ))}
             </div>
-          </div>
+          </section>
 
-          {/* Projects */}
-          <div className="card" style={{ padding: 28 }}>
-            <div className="row gap-3" style={{ marginBottom: 20 }}>
-              <div style={{ width: 32, height: 32, borderRadius: 10, background: "var(--pink)", color: "var(--pink-ink)", display: "grid", placeItems: "center" }}><Icon name="layers" size={16} /></div>
-              <h3 style={{ fontSize: 18, fontWeight: 600 }}>Portfolio & Projects</h3>
+          <section className="card profile-section profile-section-wide">
+            <div className="profile-section-head">
+              <div>
+                <span className="eyebrow">Project Proof</span>
+                <h3>Portfolio & Projects</h3>
+              </div>
+              <span className="pill mono">{projects.length}</span>
             </div>
-            <div className="grid-2">
-              {(profile?.projects?.length || 0) === 0 && <div style={{ fontSize: 13, color: "var(--ink-4)" }}>No projects mapped.</div>}
-              {profile?.projects?.map((p: any) => (
-                <div key={p.id} style={{ padding: 20, background: "var(--paper-3)", borderRadius: 16, border: "1px solid var(--line)" }}>
+            <div className="profile-project-grid">
+              {projects.length === 0 && <div className="profile-empty">No projects mapped.</div>}
+              {projects.map((p: any) => (
+                <div key={p.id} className="profile-project-card">
                   {editId === p.id ? (
                     <div className="col gap-3">
                       <input className="field-input" value={editData.title} placeholder="Title" onChange={v => setEditData({ ...editData, title: v.target.value })} />
@@ -1058,15 +1149,15 @@ function ProfileView({ port }: { port: number }) {
                     </div>
                   ) : (
                     <div className="col gap-1">
-                      <div className="row" style={{ justifyContent: "space-between" }}>
+                      <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
                         <div style={{ fontSize: 16, fontWeight: 600 }}>{p.title}</div>
                         <div className="row gap-2">
-                          <button className="btn-icon" style={{ background: "var(--paper)", border: "1px solid var(--line)", padding: 6, borderRadius: 8 }} onClick={() => { setEditId(p.id); setEditData({ ...p, stack: Array.isArray(p.stack) ? p.stack.join(", ") : (p.stack || "") }); }}><Icon name="edit" size={14} /></button>
-                          <button className="btn-icon" style={{ background: "var(--paper)", border: "1px solid var(--line)", padding: 6, borderRadius: 8, color: "var(--bad)" }} onClick={() => deleteItem("project", p.id)}><Icon name="trash" size={14} /></button>
+                          <button className="btn-icon profile-mini-action" onClick={() => { setEditId(p.id); setEditData({ ...p, stack: stackItems(p.stack).join(", ") }); }}><Icon name="edit" size={14} /></button>
+                          <button className="btn-icon profile-mini-action profile-danger" onClick={() => deleteItem("project", p.id)}><Icon name="trash" size={14} /></button>
                         </div>
                       </div>
                       <div className="row gap-1" style={{ flexWrap: "wrap", margin: "8px 0 10px" }}>
-                        {(Array.isArray(p.stack) ? p.stack : (p.stack || "").split(",").filter(Boolean)).map((s: string, i: number) => (
+                        {stackItems(p.stack).map((s: string, i: number) => (
                           <span key={i} className="pill" style={{ fontSize: 11, padding: "4px 10px", background: "var(--pink-soft)", color: "var(--pink-ink)", border: "1px solid var(--pink)" }}>{s.trim()}</span>
                         ))}
                       </div>
@@ -1077,7 +1168,7 @@ function ProfileView({ port }: { port: number }) {
                 </div>
               ))}
             </div>
-          </div>
+          </section>
         </div>
       </div>
     </div>
@@ -1647,7 +1738,7 @@ export default function App() {
           {view === "pipeline"  && <PipelineView leads={leads} openDrawer={setSel} deleteLead={deleteLead} port={port} />}
           {view === "graph"     && <GraphView stats={stats} />}
           {view === "activity"  && <ActivityView logs={logs} />}
-          {view === "profile"   && port && <ProfileView port={port} />}
+          {view === "profile"   && port && <ProfileView port={port} setView={setView} />}
           {view === "ingestion" && port && <IngestionView port={port} />}
         </div>
       </div>
