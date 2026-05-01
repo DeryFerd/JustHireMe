@@ -4,10 +4,24 @@ import re
 import sys
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
+from urllib.parse import urlparse
 from pydantic import BaseModel, Field
 from db.client import url_exists, save_lead
 
 _MAX_AGE_DAYS = 7
+
+LAST_ERRORS: list[str] = []
+LAST_USAGE: dict = {}
+
+_SOURCE_CAPS = {
+    "hn_hiring": 25,
+    "hn": 20,
+    "remoteok": 45,
+    "remotive": 45,
+    "jobicy": 45,
+    "weworkremotely": 40,
+    "rss": 35,
+}
 
 _FRESHER_TERMS = (
     "fresher", "new grad", "new graduate", "graduate", "intern",
@@ -348,6 +362,165 @@ def _is_rss_target(u: str) -> bool:
     return clean.endswith((".rss", ".xml", "/rss", "/feed"))
 
 
+def _ensure_scheme(u: str) -> str:
+    """Prepend https:// for bare domains but keep pseudo targets intact."""
+    lower = u.lower()
+    if (
+        lower.startswith("site:")
+        or lower.startswith("ats:")
+        or lower.startswith("github:")
+        or lower.startswith("hn:")
+        or lower.startswith("reddit:")
+        or lower.startswith("http://")
+        or lower.startswith("https://")
+    ):
+        return u
+    return "https://" + u
+
+
+def _platform_from_url(u: str, fallback: str = "scout") -> str:
+    host = urlparse(u).netloc.lower()
+    if "remoteok.com" in host:
+        return "remoteok"
+    if "remotive.com" in host:
+        return "remotive"
+    if "jobicy.com" in host:
+        return "jobicy"
+    if "weworkremotely.com" in host:
+        return "weworkremotely"
+    if "greenhouse.io" in host:
+        return "greenhouse"
+    if "lever.co" in host:
+        return "lever"
+    if "ashbyhq.com" in host:
+        return "ashby"
+    if "workable.com" in host:
+        return "workable"
+    return fallback
+
+
+def _lead_source(item: dict) -> str:
+    platform = str(item.get("platform") or "").strip().lower()
+    if platform:
+        return platform
+    url = str(item.get("url") or "")
+    return _platform_from_url(url, "scout")
+
+
+def _source_cap(item: dict) -> int:
+    return _SOURCE_CAPS.get(_lead_source(item), 60)
+
+
+def _http_headers(source: str) -> dict:
+    return {
+        "User-Agent": f"JustHireMe {source} scout",
+        "Accept": "application/json, application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.7",
+    }
+
+
+def _compact(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple, set)):
+        return ", ".join(str(v).strip() for v in value if str(v).strip())
+    return str(value).strip()
+
+
+def _detail(label: str, value) -> str:
+    text = _compact(value)
+    return f"{label}: {text}" if text else ""
+
+
+def _description(*parts, limit: int = 1600) -> str:
+    clean_parts = []
+    for part in parts:
+        text = _strip_html_text(_compact(part))
+        if text:
+            clean_parts.append(text)
+    return "\n".join(clean_parts)[:limit].strip()
+
+
+def _salary_from_bounds(low, high, currency: str = "") -> str:
+    low_text = _compact(low)
+    high_text = _compact(high)
+    if not low_text and not high_text:
+        return ""
+    prefix = f"{currency} " if currency else ""
+    if low_text and high_text:
+        return f"{prefix}{low_text}-{high_text}"
+    return f"{prefix}{low_text or high_text}"
+
+
+def _xml_text(node, *names: str) -> str:
+    wanted = {name.lower() for name in names}
+    for child in list(node):
+        local = str(child.tag).rsplit("}", 1)[-1].lower()
+        if local in wanted and child.text:
+            return child.text.strip()
+    return ""
+
+
+def _xml_all_text(node, name: str) -> list[str]:
+    wanted = name.lower()
+    values: list[str] = []
+    for child in list(node):
+        local = str(child.tag).rsplit("}", 1)[-1].lower()
+        if local == wanted and child.text and child.text.strip():
+            values.append(child.text.strip())
+    return values
+
+
+def _looks_role_like(text: str) -> bool:
+    lower = text.lower()
+    return any(
+        term in lower
+        for term in (
+            "engineer", "developer", "software", "frontend", "front-end",
+            "backend", "full stack", "full-stack", "data", "ai", "ml",
+            "product", "designer", "devops", "sre", "qa", "mobile",
+        )
+    )
+
+
+def _rss_company_and_role(title: str, platform: str) -> tuple[str, str]:
+    clean = _strip_html_text(title)
+    if not clean:
+        return "RSS Feed", ""
+
+    if re.search(r"\s+at\s+", clean, flags=re.I):
+        role, company = re.split(r"\s+at\s+", clean, maxsplit=1, flags=re.I)
+        return company.strip(" -|:"), role.strip(" -|:")
+
+    if ":" in clean:
+        left, right = [part.strip(" -|:") for part in clean.split(":", 1)]
+        if platform == "weworkremotely" or _looks_role_like(right):
+            return left or "RSS Feed", right or clean
+
+    if "|" in clean:
+        parts = [part.strip(" -|:") for part in clean.split("|") if part.strip()]
+        if len(parts) >= 2:
+            if _looks_role_like(parts[0]) and not _looks_role_like(parts[1]):
+                return parts[1], parts[0]
+            return parts[0], parts[1]
+
+    return "RSS Feed", clean
+
+
+def _is_ats_target(target: str) -> bool:
+    lower = target.lower()
+    if lower.startswith("ats:"):
+        return True
+    if not lower.startswith(("http://", "https://")):
+        return False
+    return any(host in lower for host in ("greenhouse.io", "lever.co", "ashbyhq.com", "workable.com"))
+
+
+async def _scrape_ats_target(target: str) -> list[dict]:
+    from agents import free_scout
+
+    return await free_scout._scrape_target(target)
+
+
 def scrape(u: str, headed: bool = False) -> list:
     u = _ensure_scheme(u)
     md = asyncio.run(_crawl(u, headed=headed))
@@ -398,6 +571,184 @@ async def _scrape_remoteok() -> list:
             "url":      j.get("url", ""),
             "platform": "remoteok",
             "posted_date": datetime.fromtimestamp(int(epoch), tz=timezone.utc).isoformat() if epoch else "",
+        })
+    return results
+
+
+async def _scrape_rss(u: str) -> list:
+    import httpx
+    import xml.etree.ElementTree as ET
+
+    platform = _platform_from_url(u, "rss")
+    async with httpx.AsyncClient(timeout=30, headers=_http_headers(platform), follow_redirects=True) as cx:
+        r = await cx.get(u)
+        r.raise_for_status()
+        root = ET.fromstring(r.text)
+
+    items = []
+    for item in root.findall(".//item"):
+        raw_title = _xml_text(item, "title")
+        link = _xml_text(item, "link", "guid")
+        date_str = _xml_text(item, "pubDate", "published", "updated")
+        if not _is_recent(date_str):
+            print(f"[scout] RSS: skipping old item ({date_str}): {raw_title}", file=sys.stderr)
+            continue
+        company, title = _rss_company_and_role(raw_title, platform)
+        desc = _description(
+            _xml_text(item, "description", "encoded", "summary"),
+            _detail("Categories", _xml_all_text(item, "category")),
+            limit=1400,
+        )
+        items.append({
+            "title": title or raw_title,
+            "company": company,
+            "url": link,
+            "platform": platform,
+            "description": desc,
+            "posted_date": date_str,
+            "source_meta": {"source": "rss", "feed": u},
+        })
+    return items
+
+
+async def _scrape_remoteok() -> list:
+    import httpx
+
+    headers = _http_headers("remoteok")
+    headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    async with httpx.AsyncClient(timeout=30, headers=headers) as cx:
+        r = await cx.get("https://remoteok.com/api")
+        r.raise_for_status()
+        data = r.json()
+
+    cut = _cutoff()
+    results = []
+    for j in data:
+        if not isinstance(j, dict):
+            continue
+        title = j.get("position", "")
+        url = j.get("url", "")
+        if not title or not url:
+            continue
+        epoch = j.get("epoch")
+        posted_date = ""
+        if epoch:
+            posted = datetime.fromtimestamp(int(epoch), tz=timezone.utc)
+            if posted < cut:
+                continue
+            posted_date = posted.isoformat()
+        salary = _salary_from_bounds(j.get("salary_min"), j.get("salary_max"), "USD")
+        desc = _description(
+            j.get("description", ""),
+            _detail("Location", j.get("location")),
+            _detail("Tags", j.get("tags")),
+            _detail("Salary", salary),
+            limit=1600,
+        )
+        results.append({
+            "title": title,
+            "company": j.get("company", ""),
+            "url": url,
+            "platform": "remoteok",
+            "description": desc,
+            "posted_date": posted_date,
+            "source_meta": {"source": "remoteok", "tags": j.get("tags") or []},
+        })
+    return results
+
+
+async def _scrape_remotive(u: str) -> list:
+    import httpx
+
+    async with httpx.AsyncClient(timeout=30, headers=_http_headers("remotive"), follow_redirects=True) as cx:
+        r = await cx.get(u)
+        r.raise_for_status()
+        data = r.json()
+
+    jobs = data.get("jobs", []) if isinstance(data, dict) else []
+    results = []
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        posted = job.get("publication_date") or job.get("published_at") or ""
+        if posted and not _is_recent(str(posted)):
+            continue
+        title = job.get("title", "")
+        company = job.get("company_name", "") or job.get("company", "")
+        url = job.get("url", "")
+        if not title or not url:
+            continue
+        desc = _description(
+            job.get("description", ""),
+            _detail("Category", job.get("category")),
+            _detail("Location", job.get("candidate_required_location")),
+            _detail("Type", job.get("job_type")),
+            _detail("Salary", job.get("salary")),
+            limit=1800,
+        )
+        results.append({
+            "title": title,
+            "company": company,
+            "url": url,
+            "platform": "remotive",
+            "description": desc,
+            "posted_date": str(posted),
+            "source_meta": {
+                "source": "remotive",
+                "category": job.get("category", ""),
+                "location": job.get("candidate_required_location", ""),
+            },
+        })
+    return results
+
+
+async def _scrape_jobicy_api(u: str) -> list:
+    import httpx
+
+    async with httpx.AsyncClient(timeout=30, headers=_http_headers("jobicy"), follow_redirects=True) as cx:
+        r = await cx.get(u)
+        r.raise_for_status()
+        data = r.json()
+
+    jobs = data.get("jobs", []) if isinstance(data, dict) else []
+    results = []
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        posted = job.get("pubDate") or job.get("published_at") or job.get("date") or ""
+        if posted and not _is_recent(str(posted)):
+            continue
+        title = job.get("jobTitle") or job.get("title") or ""
+        company = job.get("companyName") or job.get("company") or ""
+        url = job.get("url") or job.get("jobUrl") or ""
+        if not title or not url:
+            continue
+        salary = _salary_from_bounds(
+            job.get("annualSalaryMin"),
+            job.get("annualSalaryMax"),
+            job.get("salaryCurrency") or "",
+        )
+        desc = _description(
+            job.get("jobDescription") or job.get("jobExcerpt") or job.get("description", ""),
+            _detail("Industry", job.get("jobIndustry")),
+            _detail("Location", job.get("jobGeo")),
+            _detail("Type", job.get("jobType")),
+            _detail("Level", job.get("jobLevel")),
+            _detail("Salary", salary),
+            limit=1800,
+        )
+        results.append({
+            "title": title,
+            "company": company,
+            "url": url,
+            "platform": "jobicy",
+            "description": desc,
+            "posted_date": str(posted),
+            "source_meta": {
+                "source": "jobicy",
+                "industry": job.get("jobIndustry", ""),
+                "location": job.get("jobGeo", ""),
+            },
         })
     return results
 

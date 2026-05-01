@@ -104,6 +104,63 @@ const seniorityMatches = (lead: Lead, filter: SeniorityFilter) => {
   return level === filter;
 };
 
+const cleanLeadText = (value: unknown) =>
+  String(value || "").replace(/\s+/g, " ").trim();
+
+const stripCompanyPrefix = (title: string, company: string) => {
+  if (!title || !company) return title;
+  const escaped = company.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return title.replace(new RegExp(`^${escaped}\\s*(?:[|:-]+)\\s*`, "i"), "").trim();
+};
+
+const isLocationLike = (part: string) =>
+  /\b(remote|onsite|on-site|hybrid|san francisco|new york|nyc|toronto|canada|india|usa|united states|europe|london|berlin|office|flexibility)\b/i.test(part) ||
+  /^[A-Z][A-Za-z .-]+,\s*[A-Z]{2,}$/i.test(part);
+
+const isCompLike = (part: string, company: string) => {
+  const normalized = part.toLowerCase().replace(/^www\./, "");
+  const co = company.toLowerCase().replace(/^www\./, "");
+  return Boolean(
+    normalized === co ||
+    normalized === `${co}.com` ||
+    normalized.includes(`${co}.com`) ||
+    (co && normalized.includes(co) && normalized.length <= co.length + 8)
+  );
+};
+
+const cleanRoleSegment = (segment: string) => {
+  let role = cleanLeadText(segment);
+  const looking = role.match(/\b(?:looking for|hiring(?: for)?|we are hiring|we're hiring)\s*:?\s*(?:a|an|two|[0-9]+)?\s*([^.;|]+)/i);
+  if (looking?.[1]) role = cleanLeadText(looking[1]);
+  role = role.replace(/\s+(?:to join|to help|for our|in our|at our)\b[\s\S]*$/i, "").trim();
+  role = role.replace(/\s+\$[\s\S]*$/i, "").trim();
+  role = role.replace(/\s+(?:we are hiring|we're hiring|looking for|hiring)\b[\s\S]*$/i, "").trim();
+  role = role.replace(/\s+[–—-]\s*(?:we'?re|we are|looking|hiring)\b[\s\S]*$/i, "").trim();
+  return role;
+};
+
+const roleFromLead = (lead: Lead) => {
+  const company = cleanLeadText(lead.company) || "Unknown company";
+  const rawTitle = cleanLeadText(lead.title);
+  const parts = rawTitle.split(/\s*\|\s*/).map(cleanLeadText).filter(Boolean);
+  const roleHints = /\b(engineer|developer|designer|product|backend|front[- ]?end|frontend|full[- ]?stack|ai|ml|data|software|devops|sre|mobile|ios|android|platform|founding|deployed|research|intern|analyst|architect|security|qa)\b/i;
+  const noisy = (part: string) =>
+    isCompLike(part, company) ||
+    isLocationLike(part) ||
+    /^\$|₹|€|£/.test(part) ||
+    /\b(equity|salary|visa|remote|onsite|hybrid)\b/i.test(part);
+  const candidates = parts.map(cleanRoleSegment).filter(part => part && !noisy(part));
+  const hinted = candidates.find(part => roleHints.test(part));
+  const fallback = cleanRoleSegment(stripCompanyPrefix(rawTitle, company));
+  const role = cleanLeadText(hinted || candidates[0] || fallback || "Untitled role");
+  return role.length > 96 ? `${role.slice(0, 93).trim()}...` : role;
+};
+
+const leadDisplayHeading = (lead: Lead) => {
+  const company = cleanLeadText(lead.company) || "Unknown company";
+  return { role: roleFromLead(lead), company };
+};
+
 const sortLeads = (items: Lead[], sort: LeadSort) => {
   const copy = [...items];
   if (sort === "signal") return copy.sort((a, b) => (b.signal_score || 0) - (a.signal_score || 0));
@@ -139,69 +196,89 @@ function LeadFilterBar({
   seniority: SeniorityFilter; setSeniority: (v: SeniorityFilter) => void;
   platforms: string[]; total: number; shown: number; label: string;
 }) {
-  const chip = (active: boolean) => ({
-    padding: "6px 10px", borderRadius: 8, fontSize: 11.5, fontWeight: 700,
-    border: `1px solid ${active ? "var(--blue)" : "var(--line)"}`,
-    background: active ? "var(--blue-soft)" : "var(--paper-3)",
-    color: active ? "var(--blue-ink)" : "var(--ink-2)",
-    cursor: "pointer",
-  });
+  const hasFilters = Boolean(search || platform || minSignal || minMatch || budgetOnly || learningOnly || seniority !== "all");
+  const resetFilters = () => {
+    setSearch("");
+    setPlatform("");
+    setMinSignal(0);
+    setMinMatch(0);
+    setBudgetOnly(false);
+    setLearningOnly(false);
+    setSeniority("all");
+    setSort("recommended");
+  };
+  const toggleClass = (active: boolean) => `pipeline-toggle ${active ? "active" : ""}`;
 
   return (
-    <div className="card-flat" style={{ padding: 10, display: "grid", gridTemplateColumns: "minmax(220px, 1.2fr) minmax(120px, .65fr) minmax(120px, .65fr) minmax(130px, .65fr) 90px 90px minmax(190px, auto)", gap: 8, alignItems: "center" }}>
-      <input
-        value={search}
-        onChange={e => setSearch(e.target.value)}
-        placeholder={`Search ${label}...`}
-        className="field-input"
-        style={{ height: 34, fontSize: 12 }}
-      />
-      <select value={platform} onChange={e => setPlatform(e.target.value)} className="field-input" style={{ height: 34, fontSize: 12 }}>
-        <option value="">All sources</option>
-        {platforms.map(p => <option key={p} value={p}>{p}</option>)}
-      </select>
-      <select value={seniority} onChange={e => setSeniority(e.target.value as SeniorityFilter)} className="field-input" style={{ height: 34, fontSize: 12 }}>
-        <option value="all">All levels</option>
-        <option value="beginner">Beginner</option>
-        <option value="fresher">Fresher</option>
-        <option value="junior">Junior</option>
-        <option value="mid">Mid</option>
-        <option value="senior">Senior</option>
-        <option value="unknown">Unknown</option>
-      </select>
-      <select value={sort} onChange={e => setSort(e.target.value as LeadSort)} className="field-input" style={{ height: 34, fontSize: 12 }}>
-        <option value="recommended">Recommended</option>
-        <option value="newest">Newest</option>
-        <option value="signal">Signal score</option>
-        <option value="match">Match score</option>
-        <option value="company">Company</option>
-      </select>
-      <input
-        type="number"
-        min={0}
-        max={100}
-        value={minSignal}
-        onChange={e => setMinSignal(Math.max(0, Math.min(100, Number(e.target.value) || 0)))}
-        className="field-input"
-        title="Minimum signal score"
-        placeholder="Signal"
-        style={{ height: 34, fontSize: 12 }}
-      />
-      <input
-        type="number"
-        min={0}
-        max={100}
-        value={minMatch}
-        onChange={e => setMinMatch(Math.max(0, Math.min(100, Number(e.target.value) || 0)))}
-        className="field-input"
-        title="Minimum match score"
-        placeholder="Match"
-        style={{ height: 34, fontSize: 12 }}
-      />
-      <div className="row gap-2" style={{ justifyContent: "flex-end", flexWrap: "wrap" }}>
-        <button onClick={() => setBudgetOnly(!budgetOnly)} style={chip(budgetOnly)}>Budget</button>
-        <button onClick={() => setLearningOnly(!learningOnly)} style={chip(learningOnly)}>Learned</button>
-        <span className="pill mono" style={{ background: "var(--card)", border: "1px solid var(--line)" }}>{shown}/{total}</span>
+    <div className="pipeline-filterbar">
+      <label className="pipeline-searchbox">
+        <Icon name="search" size={14} />
+        <input
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder={`Search ${label}`}
+        />
+      </label>
+
+      <div className="pipeline-filter-fields">
+        <label className="pipeline-field">
+          <span>Source</span>
+          <select value={platform} onChange={e => setPlatform(e.target.value)}>
+            <option value="">All sources</option>
+            {platforms.map(p => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </label>
+        <label className="pipeline-field">
+          <span>Level</span>
+          <select value={seniority} onChange={e => setSeniority(e.target.value as SeniorityFilter)}>
+            <option value="all">All levels</option>
+            <option value="beginner">Beginner</option>
+            <option value="fresher">Fresher</option>
+            <option value="junior">Junior</option>
+            <option value="mid">Mid</option>
+            <option value="senior">Senior</option>
+            <option value="unknown">Unknown</option>
+          </select>
+        </label>
+        <label className="pipeline-field">
+          <span>Sort</span>
+          <select value={sort} onChange={e => setSort(e.target.value as LeadSort)}>
+            <option value="recommended">Recommended</option>
+            <option value="newest">Newest</option>
+            <option value="signal">Signal score</option>
+            <option value="match">Match score</option>
+            <option value="company">Company</option>
+          </select>
+        </label>
+        <label className="pipeline-field compact">
+          <span>Signal</span>
+          <input
+            type="number"
+            min={0}
+            max={100}
+            value={minSignal}
+            onChange={e => setMinSignal(Math.max(0, Math.min(100, Number(e.target.value) || 0)))}
+            title="Minimum signal score"
+          />
+        </label>
+        <label className="pipeline-field compact">
+          <span>Fit</span>
+          <input
+            type="number"
+            min={0}
+            max={100}
+            value={minMatch}
+            onChange={e => setMinMatch(Math.max(0, Math.min(100, Number(e.target.value) || 0)))}
+            title="Minimum fit score"
+          />
+        </label>
+      </div>
+
+      <div className="pipeline-filter-actions">
+        <button className={toggleClass(budgetOnly)} onClick={() => setBudgetOnly(!budgetOnly)}>Budget</button>
+        <button className={toggleClass(learningOnly)} onClick={() => setLearningOnly(!learningOnly)}>Learned</button>
+        <button className="pipeline-clear" onClick={resetFilters} disabled={!hasFilters}>Clear</button>
+        <span className="pipeline-count mono">{shown}/{total}</span>
       </div>
     </div>
   );
@@ -270,6 +347,7 @@ function useWS() {
             window.dispatchEvent(new CustomEvent("cleanup-done"));
             window.dispatchEvent(new CustomEvent("leads-refresh"));
           }
+          if (d.event === "auto_discard_done") window.dispatchEvent(new CustomEvent("leads-refresh"));
         } else if (d.type === "LEAD_UPDATED" && d.data) {
           window.dispatchEvent(new CustomEvent("lead-updated", { detail: d.data }));
         } else if (d.type === "HOT_X_LEAD" && d.data) {
@@ -299,17 +377,42 @@ function useWS() {
 
 function useLeads(port: number | null, addLog?: (msg: string, kind: LogLine["kind"], src?: string) => void) {
   const [leads, setLeads] = useState<Lead[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    if (!port) return;
-    const load = () => fetch(`http://127.0.0.1:${port}/api/v1/leads`)
-      .then(r => r.json())
-      .then((items: Lead[]) => setLeads(items.filter(l => (l.kind || "job") !== "freelance")))
-      .catch(() => {});
-    load();
+    if (!port) {
+      setLoading(true);
+      setLoaded(false);
+      return;
+    }
+    let alive = true;
+    const load = async (background = false) => {
+      if (!background) setLoading(true);
+      try {
+        const r = await fetch(`http://127.0.0.1:${port}/api/v1/leads`);
+        if (!r.ok) throw new Error(`Lead load failed (${r.status})`);
+        const items = await r.json();
+        if (!alive) return;
+        setLeads((items as Lead[]).filter(l => (l.kind || "job") !== "freelance"));
+        setError(null);
+      } catch (e) {
+        if (!alive) return;
+        setError(e instanceof Error ? e.message : "Lead load failed");
+      } finally {
+        if (alive) {
+          setLoading(false);
+          setLoaded(true);
+        }
+      }
+    };
+    load(false);
 
     // Keep leads fresh when backend broadcasts LEAD_UPDATED over WS
     const onLeadUpdated = (e: Event) => {
       const updated = (e as CustomEvent<Lead>).detail;
+      setLoaded(true);
+      setLoading(false);
       setLeads(prev => {
         const idx = prev.findIndex(l => l.job_id === updated.job_id);
         if (idx === -1) return [updated, ...prev];
@@ -319,7 +422,8 @@ function useLeads(port: number | null, addLog?: (msg: string, kind: LogLine["kin
       });
     };
     window.addEventListener("lead-updated", onLeadUpdated);
-    window.addEventListener("leads-refresh", load);
+    const onRefresh = () => load(true);
+    window.addEventListener("leads-refresh", onRefresh);
 
     fetch(`http://127.0.0.1:${port}/api/v1/events?limit=200`)
       .then(r => r.json())
@@ -331,14 +435,15 @@ function useLeads(port: number | null, addLog?: (msg: string, kind: LogLine["kin
         });
       })
       .catch(() => {});
-    const t = setInterval(load, 5000);
+    const t = setInterval(() => load(true), 5000);
     return () => {
+      alive = false;
       clearInterval(t);
       window.removeEventListener("lead-updated", onLeadUpdated);
-      window.removeEventListener("leads-refresh", load);
+      window.removeEventListener("leads-refresh", onRefresh);
     };
   }, [port]);
-  return { leads, setLeads };
+  return { leads, setLeads, loading: loading && !loaded, error };
 }
 
 function useDueFollowups(port: number | null) {
@@ -828,7 +933,7 @@ function LeadInboxView({ port, onCreated }: { port: number | null; onCreated: (l
 }
 
 
-function JobCard({ lead, onOpen, onDelete, showScore = false, showGenerate = false, port }: {
+export function JobCard({ lead, onOpen, onDelete, showScore = false, showGenerate = false, port }: {
   lead: Lead;
   onOpen: (l: Lead) => void;
   onDelete: (id: string) => void;
@@ -975,10 +1080,103 @@ function JobCard({ lead, onOpen, onDelete, showScore = false, showGenerate = fal
    PIPELINE VIEW (tabbed)
 ══════════════════════════════════════ */
 
-function PipelineView({ leads, openDrawer, deleteLead, port, scanning, reevaluating, cleaning, onReevaluate, onStopReevaluate, onCleanup }: {
+function PipelineJobCard({ lead, onOpen, onDelete, showGenerate = false, port }: {
+  lead: Lead;
+  onOpen: (l: Lead) => void;
+  onDelete: (id: string) => void;
+  showGenerate?: boolean;
+  port?: number | null;
+}) {
+  const [generating, setGenerating] = useState(false);
+  const signalScore = lead.signal_score || 0;
+  const matchScore = lead.score || 0;
+  const isHotX = lead.platform === "x" && signalScore >= 80;
+  const level = leadSeniority(lead);
+  const levelTone = seniorityTone(level);
+  const statusTone = getTone(lead.status);
+  const display = leadDisplayHeading(lead);
+  const urlLabel = lead.url ? lead.url.replace(/^https?:\/\//, "").slice(0, 42) : "No source URL";
+
+  const handleGenerate = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!port) return;
+    setGenerating(true);
+    await fetch(`http://127.0.0.1:${port}/api/v1/leads/${lead.job_id}/generate`, { method: "POST" });
+    setTimeout(() => setGenerating(false), 2000);
+  };
+
+  return (
+    <div className="pipeline-job-card lift" onClick={() => onOpen(lead)}>
+      <div className="pipeline-job-mark" style={{ background: `var(--${statusTone}-soft)`, color: `var(--${statusTone}-ink)`, borderColor: `var(--${statusTone})` }}>
+        {getMark(lead.company)}
+      </div>
+      <div className="pipeline-job-main">
+        <div className="pipeline-job-title-row">
+          <div className="pipeline-job-title">
+            <span>{display.role}</span>
+            <b>||</b>
+            <span className="company">{display.company}</span>
+          </div>
+          <span className="pipeline-status-pill" style={{ background: `var(--${statusTone}-soft)`, color: `var(--${statusTone}-ink)`, borderColor: `var(--${statusTone})` }}>
+            {lead.status || "discovered"}
+          </span>
+        </div>
+        <div className="pipeline-job-meta">
+          <span>{lead.platform || "source"}</span>
+          <span style={{ color: `var(--${levelTone}-ink)` }}>{seniorityLabel(level)}</span>
+          {isHotX && <span style={{ color: "var(--orange-ink)" }}>Hot X</span>}
+          {lead.budget && <span style={{ color: "var(--green-ink)" }}>{lead.budget}</span>}
+        </div>
+      </div>
+      <div className="pipeline-job-side">
+        <div className="pipeline-score-stack">
+          {matchScore > 0 && <span className={`pipeline-score ${matchScore >= 76 ? "good" : matchScore >= 50 ? "warn" : "bad"}`}>Fit {matchScore}</span>}
+          {signalScore > 0 && <span className={`pipeline-score ${signalScore >= 80 ? "hot" : signalScore >= 60 ? "warn" : ""}`}>Signal {signalScore}</span>}
+        </div>
+        <div className="pipeline-job-actions">
+          {showGenerate && (
+            <button className="btn" onClick={handleGenerate} disabled={generating}>
+              <Icon name="file" size={12} /> {generating ? "Queued" : "Generate"}
+            </button>
+          )}
+          <button className="btn btn-icon" onClick={e => { e.stopPropagation(); if (lead.url) openUrl(lead.url); }} title={lead.url} disabled={!lead.url}>
+            <Icon name="external-link" size={13} />
+          </button>
+          <button className="btn" onClick={e => { e.stopPropagation(); onOpen(lead); }}>Details</button>
+          <button className="btn btn-icon danger" onClick={e => { e.stopPropagation(); onDelete(lead.job_id); }} title="Delete lead">
+            <Icon name="trash" size={13} />
+          </button>
+        </div>
+        <div className="pipeline-source mono" title={lead.url}>{urlLabel}</div>
+      </div>
+    </div>
+  );
+}
+
+function PipelineSkeleton() {
+  return (
+    <div className="pipeline-skeleton">
+      <div className="pipeline-skeleton-bar" />
+      {[0, 1, 2, 3].map(i => (
+        <div key={i} className="pipeline-skeleton-card">
+          <span />
+          <div>
+            <i />
+            <b />
+            <em />
+          </div>
+          <strong />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PipelineView({ leads, openDrawer, deleteLead, port, scanning, reevaluating, cleaning, onReevaluate, onStopReevaluate, onCleanup, loading, error }: {
   leads: Lead[]; openDrawer: (l: Lead) => void;
   deleteLead: (id: string) => void; port: number | null;
   scanning: boolean; reevaluating: boolean; cleaning: boolean; onReevaluate: () => void; onStopReevaluate: () => void; onCleanup: () => void;
+  loading: boolean; error: string | null;
 }) {
   const [tab, setTab] = useState<PipelineTab>("all");
   const [search, setSearch] = useState("");
@@ -1013,17 +1211,33 @@ function PipelineView({ leads, openDrawer, deleteLead, port, scanning, reevaluat
     const tabItems: { id: PipelineTab; label: string; tone: string; leads: Lead[] }[] = [
       { id: "all",       label: "All",       tone: "teal",   leads: apply(leads) },
       { id: "hot",       label: "Hot",       tone: "orange", leads: apply(leads.filter(l => (l.signal_score || 0) >= 80 || (l.score || 0) >= 85)) },
-      { id: "found",     label: "Found",     tone: "blue",   leads: apply(leads.filter(l => l.status === "discovered")) },
+      { id: "found",     label: "New",       tone: "blue",   leads: apply(leads.filter(l => l.status === "discovered")) },
       { id: "evaluated", label: "Rated",     tone: "yellow", leads: apply(leads.filter(l => l.score > 0 || (l.signal_score || 0) > 0)) },
-      { id: "generated", label: "Generated", tone: "purple", leads: apply(leads.filter(l => l.status === "tailoring" || l.status === "approved")) },
+      { id: "generated", label: "Ready",     tone: "purple", leads: apply(leads.filter(l => l.status === "tailoring" || l.status === "approved")) },
       { id: "applied",   label: "Active",    tone: "orange", leads: apply(leads.filter(l => ["applied", "interviewing", "accepted", "rejected"].includes(l.status))) },
-      { id: "discarded", label: "Discarded", tone: "red",    leads: apply(leads.filter(l => l.status === "discarded")) },
+      { id: "discarded", label: "Discarded", tone: "bad",    leads: apply(leads.filter(l => l.status === "discarded")) },
     ];
     return tabItems;
   }, [leads, search, platform, minSignal, minMatch, sort, budgetOnly, learningOnly, seniority]);
 
   const activeTab = tabs.find(t => t.id === tab) || tabs[0];
   const visibleLeads = activeTab.leads.slice(0, visibleCount);
+  const hasFilters = Boolean(search || platform || minSignal || minMatch || budgetOnly || learningOnly || seniority !== "all");
+  const hotCount = leads.filter(l => (l.signal_score || 0) >= 80 || (l.score || 0) >= 85).length;
+  const readyCount = leads.filter(l => l.status === "tailoring" || l.status === "approved").length;
+  const activeCount = leads.filter(l => ["applied", "interviewing", "accepted", "rejected"].includes(l.status)).length;
+  const busyLabel = scanning ? "Scanning for new leads" : reevaluating ? "Re-evaluating fit scores" : cleaning ? "Cleaning bad data" : "";
+  const metrics = [
+    { label: "Total", value: leads.length, tone: "blue", icon: "layers" },
+    { label: "Hot", value: hotCount, tone: "orange", icon: "spark" },
+    { label: "New", value: leads.filter(l => l.status === "discovered").length, tone: "teal", icon: "search" },
+    { label: "Ready", value: readyCount, tone: "purple", icon: "file" },
+    { label: "Active", value: activeCount, tone: "green", icon: "fire" },
+    { label: "Discarded", value: leads.filter(l => l.status === "discarded").length, tone: "bad", icon: "trash" },
+  ];
+  const toneSoft = (tone: string) => tone === "bad" ? "var(--bad-soft)" : `var(--${tone}-soft)`;
+  const toneInk = (tone: string) => tone === "bad" ? "var(--bad)" : `var(--${tone}-ink)`;
+  const toneBorder = (tone: string) => tone === "bad" ? "var(--bad)" : `var(--${tone})`;
 
   const toggleSelect = (id: string) => {
     setSelected(prev => {
@@ -1041,76 +1255,83 @@ function PipelineView({ leads, openDrawer, deleteLead, port, scanning, reevaluat
   };
 
   return (
-    <div className="col" style={{ flex: 1, height: "100%", minHeight: 0, overflow: "hidden" }}>
-      {/* Tab bar + search */}
-      <div style={{
-        padding: "14px 20px 0", borderBottom: "1px solid var(--line)",
-        background: "var(--paper)", flexShrink: 0,
-        display: "flex", flexDirection: "column", gap: 12,
-      }}>
-        <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-          <div className="row gap-1" style={{ flexWrap: "wrap" }}>
+    <div className="pipeline-page">
+      <div className="pipeline-top">
+        <div className="pipeline-overview">
+          <div className="pipeline-overview-copy">
+            <span className="eyebrow">Lead queue</span>
+            <h2>Review, clean, and ship applications</h2>
+            <p>{loading ? "Loading saved job leads..." : `${activeTab.leads.length} matching leads in ${activeTab.label.toLowerCase()}.`}</p>
+          </div>
+          {metrics.map(metric => (
+            <button
+              key={metric.label}
+              className="pipeline-metric"
+              onClick={() => {
+                const nextTab = metric.label === "Hot" ? "hot" : metric.label === "New" ? "found" : metric.label === "Ready" ? "generated" : metric.label === "Active" ? "applied" : metric.label === "Discarded" ? "discarded" : "all";
+                setTab(nextTab as PipelineTab);
+                setBulkSelecting(false);
+                setSelected(new Set());
+              }}
+              style={{ background: toneSoft(metric.tone), borderColor: toneBorder(metric.tone), color: toneInk(metric.tone) }}
+            >
+              <Icon name={metric.icon} size={14} />
+              <span className="mono tabular">{metric.value}</span>
+              <small>{metric.label}</small>
+            </button>
+          ))}
+        </div>
+
+        {(busyLabel || error) && (
+          <div className={`pipeline-notice ${error ? "error" : ""}`}>
+            {error ? <Icon name="x" size={13} /> : <span className="dot pulse-soft" />}
+            <span>{error || busyLabel}</span>
+          </div>
+        )}
+
+        <div className="pipeline-toolbar">
+          <div className="pipeline-tabs" role="tablist" aria-label="Pipeline stages">
             {tabs.map(t => (
               <button
                 key={t.id}
+                role="tab"
+                aria-selected={tab === t.id}
+                className={tab === t.id ? "active" : ""}
                 onClick={() => { setTab(t.id); setBulkSelecting(false); setSelected(new Set()); }}
-                style={{
-                  padding: "7px 14px", borderRadius: "10px 10px 0 0", fontSize: 12, fontWeight: 700,
-                  letterSpacing: "0.06em", textTransform: "uppercase", cursor: "pointer",
-                  border: "1px solid var(--line)", borderBottom: tab === t.id ? "1px solid var(--paper)" : "1px solid var(--line)",
-                  background: tab === t.id ? "var(--paper)" : "var(--paper-3)",
-                  color: tab === t.id ? `var(--${t.tone}-ink)` : "var(--ink-3)",
-                  marginBottom: tab === t.id ? -1 : 0,
-                  display: "flex", alignItems: "center", gap: 6,
-                }}
+                style={tab === t.id ? { background: toneSoft(t.tone), borderColor: toneBorder(t.tone), color: toneInk(t.tone) } : undefined}
               >
-                {t.label}
-                <span style={{
-                  fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 999,
-                  background: tab === t.id ? `var(--${t.tone})` : "var(--paper-3)",
-                  color: tab === t.id ? `var(--${t.tone}-ink)` : "var(--ink-4)",
-                }}>{t.leads.length}</span>
+                <span>{t.label}</span>
+                <b className="mono tabular">{t.leads.length}</b>
               </button>
             ))}
           </div>
 
-          <div className="row gap-2">
+          <div className="pipeline-actions">
             {reevaluating ? (
-              <button onClick={onStopReevaluate}
-                style={{ padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: 700, border: "1px solid var(--bad)", background: "var(--bad-soft)", color: "var(--bad)", cursor: "pointer", display: "flex", alignItems: "center", gap: 7 }}>
-                <Icon name="x" size={12} color="var(--bad)" /> Stop re-eval
+              <button className="btn danger" onClick={onStopReevaluate}>
+                <Icon name="x" size={13} /> Stop re-eval
               </button>
             ) : (
-              <button onClick={onReevaluate} disabled={leads.length === 0 || scanning || cleaning}
-                style={{ padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: 700, border: "1px solid var(--yellow)", background: "var(--yellow-soft)", color: "var(--yellow-ink)", cursor: leads.length === 0 || scanning || cleaning ? "not-allowed" : "pointer", opacity: leads.length === 0 || scanning || cleaning ? 0.55 : 1, display: "flex", alignItems: "center", gap: 7 }}>
-                <Icon name="pulse" size={12} /> Re-evaluate all
+              <button className="btn" onClick={onReevaluate} disabled={leads.length === 0 || scanning || cleaning || loading}>
+                <Icon name="pulse" size={13} /> Re-evaluate
               </button>
             )}
-            <button onClick={onCleanup} disabled={leads.length === 0 || scanning || reevaluating || cleaning}
-              style={{ padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: 700, border: "1px solid var(--bad)", background: "var(--bad-soft)", color: "var(--bad)", cursor: leads.length === 0 || scanning || reevaluating || cleaning ? "not-allowed" : "pointer", opacity: leads.length === 0 || scanning || reevaluating || cleaning ? 0.55 : 1, display: "flex", alignItems: "center", gap: 7 }}>
-              <Icon name="trash" size={12} /> {cleaning ? "Cleaning..." : "Clean bad data"}
+            <button className="btn danger-soft" onClick={onCleanup} disabled={leads.length === 0 || scanning || reevaluating || cleaning || loading}>
+              <Icon name="trash" size={13} /> {cleaning ? "Cleaning" : "Clean bad data"}
             </button>
             {tab === "discarded" && (
               bulkSelecting ? (
-                <div className="row gap-2">
-                  <button onClick={bulkDelete} disabled={selected.size === 0}
-                    style={{ padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: 700, background: "var(--bad)", color: "#fff", border: "none", cursor: "pointer" }}>
-                    Delete {selected.size} selected
-                  </button>
-                  <button onClick={() => { setBulkSelecting(false); setSelected(new Set()); }}
-                    style={{ padding: "6px 12px", borderRadius: 8, fontSize: 12, border: "1px solid var(--line)", background: "var(--paper)", cursor: "pointer", color: "var(--ink-2)" }}>
-                    Cancel
-                  </button>
-                </div>
+                <>
+                  <button className="btn danger" onClick={bulkDelete} disabled={selected.size === 0}>Delete {selected.size}</button>
+                  <button className="btn" onClick={() => { setBulkSelecting(false); setSelected(new Set()); }}>Cancel</button>
+                </>
               ) : (
-                <button onClick={() => setBulkSelecting(true)}
-                  style={{ padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: 600, border: "1px solid var(--bad)", background: "var(--bad-soft)", color: "var(--bad)", cursor: "pointer" }}>
-                  Bulk delete
-                </button>
+                <button className="btn" onClick={() => setBulkSelecting(true)} disabled={activeTab.leads.length === 0}>Bulk delete</button>
               )
             )}
           </div>
         </div>
+
         <LeadFilterBar
           search={search}
           setSearch={setSearch}
@@ -1135,43 +1356,39 @@ function PipelineView({ leads, openDrawer, deleteLead, port, scanning, reevaluat
         />
       </div>
 
-      {/* Content */}
-      <div className="scroll" style={{ flex: 1, padding: 20, minHeight: 0 }}>
-        {activeTab.leads.length === 0 ? (
-          <div style={{
-            padding: "64px 24px", textAlign: "center",
-            border: "1px dashed var(--line)", borderRadius: 16,
-            color: "var(--ink-4)", fontSize: 13,
-          }}>
-            {search ? `No results for "${search}"` : `No ${activeTab.label.toLowerCase()} jobs yet.`}
+      <div className="pipeline-content scroll">
+        <div className="pipeline-results-head">
+          <div>
+            <h3>{activeTab.label}</h3>
+            <p>{hasFilters ? "Filtered results" : "All matching leads"} - showing {Math.min(visibleCount, activeTab.leads.length)} of {activeTab.leads.length}</p>
+          </div>
+          {bulkSelecting && tab === "discarded" && <span className="pipeline-selected mono">{selected.size} selected</span>}
+        </div>
+        {loading ? (
+          <PipelineSkeleton />
+        ) : activeTab.leads.length === 0 ? (
+          <div className="pipeline-empty">
+            <Icon name={hasFilters ? "filter" : "search"} size={18} />
+            <h3>{hasFilters ? "No leads match these filters" : `No ${activeTab.label.toLowerCase()} jobs yet`}</h3>
+            <p>{hasFilters ? "Clear filters or lower the score thresholds." : "Run a scan or paste a lead from the inbox to start filling this lane."}</p>
           </div>
         ) : (
-          <div style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fill, minmax(380px, 1fr))",
-            gap: 14,
-          }}>
+          <div className="pipeline-list">
             {visibleLeads.map(lead => (
-              <div key={lead.job_id} style={{ position: "relative" }}>
+              <div key={lead.job_id} className="pipeline-list-item">
                 {bulkSelecting && tab === "discarded" && (
                   <div
+                    className="pipeline-select-box"
                     onClick={() => toggleSelect(lead.job_id)}
-                    style={{
-                      position: "absolute", top: 10, left: 10, zIndex: 5,
-                      width: 18, height: 18, borderRadius: 5,
-                      border: `2px solid ${selected.has(lead.job_id) ? "var(--bad)" : "var(--line)"}`,
-                      background: selected.has(lead.job_id) ? "var(--bad)" : "var(--paper)",
-                      cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
-                    }}
+                    style={{ borderColor: selected.has(lead.job_id) ? "var(--bad)" : "var(--line)", background: selected.has(lead.job_id) ? "var(--bad)" : "var(--paper)" }}
                   >
-                    {selected.has(lead.job_id) && <span style={{ color: "#fff", fontSize: 11, lineHeight: 1 }}>✓</span>}
+                    {selected.has(lead.job_id) && <Icon name="check" size={11} color="#fff" />}
                   </div>
                 )}
-                <JobCard
+                <PipelineJobCard
                   lead={lead}
                   onOpen={openDrawer}
                   onDelete={deleteLead}
-                  showScore={tab === "hot" || tab === "evaluated" || tab === "generated" || tab === "applied"}
                   showGenerate={tab === "evaluated"}
                   port={port}
                 />
@@ -1975,6 +2192,13 @@ function ApprovalDrawer({ j, port, onClose, onFired }: {
     : null;
   const selectedProjects = j.selected_projects || [];
   const canFire = resumeReady && coverReady && !firing;
+  const display = leadDisplayHeading(j);
+  const originalTitle = cleanLeadText(j.title);
+  const descriptionText = cleanLeadText(j.description);
+  const jobDescription = [
+    originalTitle && originalTitle !== display.role ? `Original listing title:\n${originalTitle}` : "",
+    descriptionText ? `Description:\n${descriptionText}` : "",
+  ].filter(Boolean).join("\n\n") || "No job description extracted yet.";
 
   // Tauri WebView blocks <iframe src="http://..."> for localhost — fetch as blob instead
   useEffect(() => {
@@ -2117,8 +2341,10 @@ function ApprovalDrawer({ j, port, onClose, onFired }: {
               {j.feedback && <span className="pill mono" style={{ background: "var(--blue-soft)", color: "var(--blue-ink)", border: "1px solid var(--blue)" }}>{j.feedback.replace(/_/g, " ")}</span>}
               {j.score > 0 && <span className="pill mono" style={{ background: j.score >= 85 ? "var(--green-soft)" : j.score >= 60 ? "var(--yellow-soft)" : "var(--bad-soft)", color: j.score >= 85 ? "var(--green-ink)" : j.score >= 60 ? "var(--yellow-ink)" : "var(--bad)" }}>{j.score}/100 match</span>}
             </div>
-            <h2 style={{ fontSize: 26, fontWeight: 600, overflowWrap: "anywhere" }}>{j.title}</h2>
-            <p style={{ color: "var(--ink-3)", fontSize: 13, marginTop: 2 }}>{j.company} · {j.platform}</p>
+            <h2 style={{ fontSize: 26, fontWeight: 600, overflowWrap: "anywhere" }}>
+              {display.role} <span style={{ color: "var(--ink-3)", fontWeight: 700 }}>||</span> {display.company}
+            </h2>
+            <p style={{ color: "var(--ink-3)", fontSize: 13, marginTop: 2 }}>{j.platform}</p>
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexShrink: 0 }}>
             <button
@@ -2227,17 +2453,12 @@ function ApprovalDrawer({ j, port, onClose, onFired }: {
           {/* Right: Score + actions */}
           <div className="approval-detail-pane" style={{ display: "flex", flexDirection: "column", minHeight: 0, background: "var(--paper)" }}>
             <div style={{ padding: 22, display: "flex", flexDirection: "column", gap: 14, overflowY: "auto", minHeight: 0, flex: 1 }}>
-            <div className="eyebrow">Match Reasoning</div>
-
-            {/* Description */}
-            {j.description && (
-              <div>
-                <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>Job Description</div>
-                <div style={{ fontSize: 12.5, color: "var(--ink-2)", lineHeight: 1.6, background: "var(--paper-3)", borderRadius: 8, padding: "10px 12px", border: "1px solid var(--line)" }}>
-                  {j.description}
-                </div>
+            <div>
+              <div className="eyebrow" style={{ marginBottom: 6 }}>Job Description</div>
+              <div style={{ fontSize: 12.5, color: "var(--ink-2)", lineHeight: 1.6, background: "var(--paper-3)", borderRadius: 8, padding: "10px 12px", border: "1px solid var(--line)", whiteSpace: "pre-wrap" }}>
+                {jobDescription}
               </div>
-            )}
+            </div>
 
             {extractedDetails.length > 0 && (
               <div>
@@ -2252,6 +2473,8 @@ function ApprovalDrawer({ j, port, onClose, onFired }: {
                 </div>
               </div>
             )}
+
+            <div className="eyebrow">Match Reasoning</div>
 
             {(j.signal_score || j.signal_reason || (j.signal_tags?.length ?? 0) > 0) && (
               <div>
@@ -2448,7 +2671,7 @@ function ApprovalDrawer({ j, port, onClose, onFired }: {
 
 export default function App() {
   const { conn, port, logs, beat, addLog: wsAddLog } = useWS();
-  const { leads, setLeads } = useLeads(port, wsAddLog);
+  const { leads, setLeads, loading: leadsLoading, error: leadsError } = useLeads(port, wsAddLog);
   const dueFollowups = useDueFollowups(port);
   const stats  = useGraphStats(port);
   const [view, setView]           = useState<View>("dashboard");
@@ -2569,7 +2792,7 @@ export default function App() {
         <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column", background: "var(--paper)" }}>
           {view === "dashboard" && <DashboardView leads={leads} dueFollowups={dueFollowups} logs={logs} setView={setView} openDrawer={setSel} scanning={scanning} reevaluating={reevaluating} cleaning={cleaning} onScan={onScan} onStopScan={onStopScan} onReevaluate={onReevaluateJobs} onStopReevaluate={onStopReevaluate} onCleanup={onCleanupLeads} scanErr={scanErr} />}
           {view === "inbox"     && <LeadInboxView port={port} onCreated={setSel} />}
-          {view === "pipeline"  && <PipelineView leads={leads} openDrawer={setSel} deleteLead={deleteLead} port={port} scanning={scanning} reevaluating={reevaluating} cleaning={cleaning} onReevaluate={onReevaluateJobs} onStopReevaluate={onStopReevaluate} onCleanup={onCleanupLeads} />}
+          {view === "pipeline"  && <PipelineView leads={leads} openDrawer={setSel} deleteLead={deleteLead} port={port} scanning={scanning} reevaluating={reevaluating} cleaning={cleaning} onReevaluate={onReevaluateJobs} onStopReevaluate={onStopReevaluate} onCleanup={onCleanupLeads} loading={leadsLoading || !port} error={leadsError} />}
           {view === "graph"     && <GraphView stats={stats} />}
           {view === "activity"  && <ActivityView logs={logs} />}
           {view === "profile"   && port && <ProfileView port={port} setView={setView} />}
