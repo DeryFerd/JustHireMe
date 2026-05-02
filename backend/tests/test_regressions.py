@@ -694,6 +694,41 @@ End-to-end build of a production-grade financial reporting platform.
         self.assertIn("site:indeed.com/jobs", targets)
         self.assertNotIn("site:freelancer.com/projects", targets)
 
+    def test_hn_only_job_targets_are_broadened(self):
+        import main
+
+        targets = main._job_targets("hn-hiring")
+
+        self.assertIn("hn-hiring", targets)
+        self.assertIn("https://remoteok.com/api", targets)
+        self.assertIn("site:jobs.lever.co", targets)
+
+    def test_india_job_targets_use_india_only_fallback_and_filter(self):
+        import main
+
+        self.assertIn("site:cutshort.io/jobs software engineer India startup", main._job_targets("", "india"))
+
+        targets = main._job_targets("\n".join([
+            "https://remoteok.com/api",
+            "site:jobs.lever.co India",
+            "site:cutshort.io/jobs software engineer India startup",
+        ]), "india")
+
+        self.assertIn("site:jobs.lever.co India", targets)
+        self.assertIn("site:cutshort.io/jobs software engineer India startup", targets)
+        self.assertNotIn("https://remoteok.com/api", targets)
+
+    def test_india_query_generation_keeps_location_clause_on_fallback(self):
+        from agents import query_gen
+
+        with mock.patch("llm.call_llm", side_effect=RuntimeError("offline")):
+            queries = query_gen.generate(_sample_scoring_profile(), ["site:jobs.lever.co"], "india")
+
+        self.assertEqual(len(queries), 1)
+        self.assertIn("site:jobs.lever.co", queries[0])
+        self.assertIn("India", queries[0])
+        self.assertIn("Indian startup", queries[0])
+
     def test_target_parser_ignores_comments_without_swallowing_urls(self):
         import main
 

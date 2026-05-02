@@ -527,53 +527,6 @@ def scrape(u: str, headed: bool = False) -> list:
     return _parse(md, u)
 
 
-async def _scrape_rss(u: str) -> list:
-    import httpx
-    import xml.etree.ElementTree as ET
-    async with httpx.AsyncClient(timeout=30) as cx:
-        r = await cx.get(u)
-        root = ET.fromstring(r.text)
-        items = []
-        cut = _cutoff()
-        for item in root.findall(".//item"):
-            t    = item.find("title").text if item.find("title") is not None else ""
-            link = item.find("link").text  if item.find("link")  is not None else ""
-            pub  = item.find("pubDate")
-            date_str = pub.text if pub is not None else ""
-            # Filter by pubDate — include if recent or date unknown
-            if not _is_recent(date_str):
-                print(f"[scout] RSS: skipping old item ({date_str}): {t}", file=sys.stderr)
-                continue
-            items.append({"title": t, "company": "RSS Feed", "url": link,
-                          "platform": "rss", "posted_date": date_str})
-        return items
-
-
-async def _scrape_remoteok() -> list:
-    import httpx
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
-    async with httpx.AsyncClient(timeout=30, headers=headers) as cx:
-        r = await cx.get("https://remoteok.com/api")
-        data = r.json()
-    cut = _cutoff()
-    results = []
-    for j in data:
-        if not isinstance(j, dict):
-            continue
-        epoch = j.get("epoch")  # Unix timestamp
-        if epoch:
-            posted = datetime.fromtimestamp(int(epoch), tz=timezone.utc)
-            if posted < cut:
-                continue  # too old
-        results.append({
-            "title":    j.get("position", ""),
-            "company":  j.get("company", ""),
-            "url":      j.get("url", ""),
-            "platform": "remoteok",
-            "posted_date": datetime.fromtimestamp(int(epoch), tz=timezone.utc).isoformat() if epoch else "",
-        })
-    return results
-
 
 async def _scrape_rss(u: str) -> list:
     import httpx
@@ -902,6 +855,8 @@ def run(
                 processed_leads.extend(batch)
             elif "remoteok.com/api" in target:
                 processed_leads.extend(asyncio.run(_scrape_remoteok()))
+            elif "jobicy.com/api" in target:
+                processed_leads.extend(asyncio.run(_scrape_jobicy_api(target)))
             elif _is_rss_target(target):
                 processed_leads.extend(asyncio.run(_scrape_rss(target)))
             elif target.startswith("site:"):

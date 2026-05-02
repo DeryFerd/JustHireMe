@@ -60,7 +60,19 @@ def _seniority_hint(level: str) -> str:
     return hints.get(level, '"software engineer" OR "developer"')
 
 
-def generate(profile: dict, urls: list[str]) -> list[str]:
+def _market_focus(value) -> str:
+    focus = str(value or "global").strip().lower()
+    return "india" if focus in {"india", "in", "indian", "indian_startups"} else "global"
+
+
+def _india_clause(query: str) -> str:
+    lower = query.lower()
+    if any(term in lower for term in ("india", "indian", "bangalore", "bengaluru", "mumbai", "delhi", "pune", "hyderabad")):
+        return query
+    return f'{query} (India OR Indian OR Bengaluru OR Bangalore OR Mumbai OR Pune OR Hyderabad OR Delhi OR "Indian startup")'
+
+
+def generate(profile: dict, urls: list[str], market_focus: str = "global") -> list[str]:
     """
     Main entry point.  Returns a new URL list where every 'site:' entry has
     been replaced with a profile-tailored query, while RSS/API/direct URLs
@@ -68,6 +80,7 @@ def generate(profile: dict, urls: list[str]) -> list[str]:
     """
     from llm import call_llm
 
+    focus = _market_focus(market_focus)
     site_domains, passthrough = _extract_domains(urls)
 
     if not site_domains:
@@ -107,9 +120,16 @@ Rules:
 - Never add quotation marks around the whole query, only around individual terms.
 - Return only the list of queries — no extra commentary."""
 
+    if focus == "india":
+        system += """
+- This scan is INDIA ONLY. Add India/Indian startup location intent to every query.
+- Prefer India-friendly terms such as India, Indian, Bengaluru, Bangalore, Mumbai, Pune, Hyderabad, Delhi, and "Indian startup".
+- Do not produce broad global remote queries for this mode."""
+
     user = f"""CANDIDATE PROFILE
 Target role / summary : {target_role}
 Detected seniority    : {experience_level.upper()} - preferred seniority query terms: {seniority_hint}
+Market focus          : {"INDIA ONLY - Indian startups and India-based roles" if focus == "india" else "Global"}
 Top skills            : {', '.join(skills[:15])}
 Project tech stack    : {', '.join(stack_tokens)}
 Recent role titles    : {', '.join(recent_roles) if recent_roles else 'none (fresher/student)'}
@@ -128,6 +148,9 @@ Generate the queries now."""
         # Fallback: build simple queries from top skills
         top = " OR ".join(f'"{s}"' for s in skills[:3]) if skills else f'"{target_role}"'
         smart = [f"site:{d} ({top}) ({seniority_hint})" for d in site_domains]
+
+    if focus == "india":
+        smart = [_india_clause(q) for q in smart]
 
     import sys
     print(f"[query_gen] Generated {len(smart)} queries for {len(site_domains)} domains", file=sys.stderr)

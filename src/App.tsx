@@ -2528,11 +2528,19 @@ function ApprovalDrawer({ j, port, onClose, onFired }: {
 
             {(j.outreach_reply || j.outreach_dm || j.outreach_email || j.proposal_draft) && (
               <div>
-                <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Outreach Drafts</div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Outreach Messages</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {draftBlock("Reply", j.outreach_reply)}
-                  {draftBlock("DM", j.outreach_dm)}
-                  {draftBlock("Email", j.outreach_email)}
+                  {j.outreach_reply && (
+                    <div style={{ background: "var(--purple-soft)", border: "1px solid var(--purple)", borderRadius: 10, padding: "10px 12px" }}>
+                      <div className="row" style={{ justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                        <span className="mono" style={{ fontSize: 10, color: "var(--purple-ink)", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700 }}>3-Line Founder Message</span>
+                        <button className="btn btn-ghost" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => navigator.clipboard?.writeText(j.outreach_reply!)}>Copy</button>
+                      </div>
+                      <div style={{ fontSize: 13, color: "var(--ink)", lineHeight: 1.65, whiteSpace: "pre-wrap", fontWeight: 500 }}>{j.outreach_reply}</div>
+                    </div>
+                  )}
+                  {draftBlock("LinkedIn Note", j.outreach_dm)}
+                  {draftBlock("Cold Email", j.outreach_email)}
                   {draftBlock("Proposal", j.proposal_draft)}
                 </div>
               </div>

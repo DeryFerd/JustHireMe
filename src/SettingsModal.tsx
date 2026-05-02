@@ -16,7 +16,7 @@ interface Cfg {
   apify_token: string; apify_actor: string; linkedin_cookie: string; x_bearer_token: string; x_search_queries: string; x_watchlist: string;
   x_max_requests_per_scan: string; x_max_results_per_query: string; x_min_signal_score: string; x_hot_lead_threshold: string; x_enable_notifications: string;
   free_sources_enabled: string; free_source_targets: string; company_watchlist: string; free_source_max_requests: string; free_source_min_signal_score: string;
-  job_boards: string;
+  job_boards: string; job_market_focus: string;
   ghost_mode: string; auto_apply: string; headed_browser: string;
 }
 
@@ -33,7 +33,7 @@ const EMPTY: Cfg = {
   apify_token: "", apify_actor: "", linkedin_cookie: "", x_bearer_token: "", x_search_queries: "", x_watchlist: "",
   x_max_requests_per_scan: "5", x_max_results_per_query: "50", x_min_signal_score: "55", x_hot_lead_threshold: "80", x_enable_notifications: "false",
   free_sources_enabled: "false", free_source_targets: "", company_watchlist: "", free_source_max_requests: "20", free_source_min_signal_score: "45",
-  job_boards: "",
+  job_boards: "", job_market_focus: "global",
   ghost_mode: "false", auto_apply: "false", headed_browser: "false",
 };
 
@@ -67,6 +67,43 @@ const STEPS = [
   { id: "actuator",  label: "Actuator",  icon: "ghost",  tone: "pink",
     desc: "Vision-based form filler — needs a model with image support" },
 ];
+
+const GLOBAL_SOURCE_PRESET = [
+  "hn-hiring,",
+  "https://remoteok.com/api,",
+  "https://remotive.com/api/remote-jobs?search=junior,",
+  "https://remotive.com/api/remote-jobs?search=python,",
+  "https://remotive.com/api/remote-jobs?search=react,",
+  "https://remotive.com/api/remote-jobs?search=ai,",
+  "https://jobicy.com/api/v2/remote-jobs?count=50&tag=python,",
+  "https://jobicy.com/api/v2/remote-jobs?count=50&tag=react,",
+  "https://jobicy.com/feed/newjobs,",
+  "https://weworkremotely.com/categories/remote-programming-jobs.rss,",
+  "https://weworkremotely.com/categories/remote-full-stack-programming-jobs.rss,",
+  "site:boards.greenhouse.io,",
+  "site:jobs.lever.co,",
+  "site:jobs.ashbyhq.com,",
+  "site:apply.workable.com,",
+  "site:wellfound.com/jobs,",
+  "site:linkedin.com/jobs,",
+  "site:indeed.com/jobs,",
+  "site:naukri.com,",
+  "site:instahyre.com,",
+  "site:cutshort.io/jobs,",
+].join("\n");
+
+const INDIA_SOURCE_PRESET = [
+  "site:wellfound.com/jobs India startup,",
+  "site:cutshort.io/jobs software engineer India startup,",
+  "site:instahyre.com software engineer India,",
+  "site:naukri.com software engineer startup India,",
+  "site:linkedin.com/jobs software engineer India startup,",
+  "site:indeed.com/jobs software engineer India startup,",
+  "site:boards.greenhouse.io India,",
+  "site:jobs.lever.co India,",
+  "site:jobs.ashbyhq.com India,",
+  "site:apply.workable.com India,",
+].join("\n");
 
 const _KEY_FIELD: Record<string, keyof Cfg> = {
   anthropic: "anthropic_key", groq: "groq_api_key",
@@ -451,12 +488,39 @@ export default function SettingsModal({ port, onClose }: Props) {
                 </div>
               </div>
               <LabelledField label="Target job boards / search URLs" hint="comma-separated">
+                <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10 }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: "0.08em" }}>Market focus</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                    {[
+                      { id: "global", label: "Global boards", sub: "HN, RemoteOK, Remotive, ATS, RSS, job boards" },
+                      { id: "india", label: "India only", sub: "India roles, Indian startups, Indian job boards and ATS" },
+                    ].map(mode => {
+                      const active = (cfg.job_market_focus || "global") === mode.id;
+                      return (
+                        <button key={mode.id} onClick={() => onChange("job_market_focus", mode.id)} style={{
+                          textAlign: "left", padding: "10px 12px", borderRadius: 10, cursor: "pointer",
+                          background: active ? "var(--blue-soft)" : "var(--paper-3)",
+                          border: `1.5px solid ${active ? "var(--blue)" : "var(--line)"}`,
+                          color: active ? "var(--blue-ink)" : "var(--ink-2)",
+                        }}>
+                          <div style={{ fontSize: 12, fontWeight: 700 }}>{mode.label}</div>
+                          <div style={{ fontSize: 11, marginTop: 3, lineHeight: 1.35, color: "var(--ink-3)" }}>{mode.sub}</div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
                 <div style={{ marginBottom: 8 }}>
                   <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 7 }}>Quick add sources</div>
                   <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
                     {[
+                      { label: "Global preset", url: GLOBAL_SOURCE_PRESET },
+                      { label: "India preset", url: INDIA_SOURCE_PRESET },
                       { label: "HN Hiring", url: "hn-hiring" },
                       { label: "RemoteOK", url: "https://remoteok.com/api" },
+                      { label: "Naukri", url: "site:naukri.com software engineer India" },
+                      { label: "Instahyre", url: "site:instahyre.com software engineer India" },
+                      { label: "Cutshort", url: "site:cutshort.io/jobs software engineer India startup" },
                       { label: "Greenhouse", url: "site:boards.greenhouse.io" },
                       { label: "Lever", url: "site:jobs.lever.co" },
                       { label: "Ashby", url: "site:jobs.ashbyhq.com" },
@@ -473,6 +537,8 @@ export default function SettingsModal({ port, onClose }: Props) {
                         <button key={p.label} onClick={() => {
                           if (already) return;
                           const sep = cfg.job_boards.trim() ? ",\n" : "";
+                          if (p.label === "India preset") onChange("job_market_focus", "india");
+                          if (p.label === "Global preset") onChange("job_market_focus", "global");
                           onChange("job_boards", cfg.job_boards.trim() + sep + p.url);
                         }} style={{
                           padding: "4px 10px", borderRadius: 7, fontSize: 10.5, cursor: already ? "default" : "pointer",

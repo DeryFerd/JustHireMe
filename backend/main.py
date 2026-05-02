@@ -143,16 +143,38 @@ cm = _CM()
 DEFAULT_JOB_TARGETS = [
     "hn-hiring",
     "https://remoteok.com/api",
+    "https://remotive.com/api/remote-jobs?search=junior",
     "https://remotive.com/api/remote-jobs?search=python",
     "https://remotive.com/api/remote-jobs?search=react",
     "https://remotive.com/api/remote-jobs?search=ai",
+    "https://jobicy.com/api/v2/remote-jobs?count=50&tag=python",
+    "https://jobicy.com/api/v2/remote-jobs?count=50&tag=react",
     "https://jobicy.com/feed/newjobs",
     "https://weworkremotely.com/categories/remote-programming-jobs.rss",
+    "https://weworkremotely.com/categories/remote-full-stack-programming-jobs.rss",
     "site:boards.greenhouse.io",
     "site:jobs.lever.co",
     "site:jobs.ashbyhq.com",
     "site:apply.workable.com",
     "site:wellfound.com/jobs",
+    "site:linkedin.com/jobs",
+    "site:indeed.com/jobs",
+    "site:naukri.com",
+    "site:instahyre.com",
+    "site:cutshort.io/jobs",
+]
+
+INDIA_JOB_TARGETS = [
+    "site:wellfound.com/jobs India startup",
+    "site:cutshort.io/jobs software engineer India startup",
+    "site:instahyre.com software engineer India",
+    "site:naukri.com software engineer startup India",
+    "site:linkedin.com/jobs software engineer India startup",
+    "site:indeed.com/jobs software engineer India startup",
+    "site:boards.greenhouse.io India",
+    "site:jobs.lever.co India",
+    "site:jobs.ashbyhq.com India",
+    "site:apply.workable.com India",
 ]
 
 _BLOCKED_JOB_TARGET_MARKERS = (
@@ -185,11 +207,22 @@ def _dedupe_targets(targets: list[str]) -> list[str]:
     return out
 
 
-def _job_targets(raw: str) -> list[str]:
+def _job_market_focus(value) -> str:
+    focus = str(value or "global").strip().lower()
+    return "india" if focus in {"india", "in", "indian", "indian_startups"} else "global"
+
+
+def _is_hn_target(target: str) -> bool:
+    lower = target.lower()
+    return lower.startswith("hn:") or "hn-hiring" in lower or "hackernews" in lower or "news.ycombinator.com" in lower
+
+
+def _job_targets(raw: str, market_focus: str = "global") -> list[str]:
     """Return configured job discovery targets, excluding freelance marketplaces."""
+    focus = _job_market_focus(market_focus)
     targets = _split_configured_targets(raw)
     if not targets:
-        return list(DEFAULT_JOB_TARGETS)
+        return list(INDIA_JOB_TARGETS if focus == "india" else DEFAULT_JOB_TARGETS)
 
     filtered: list[str] = []
     for target in targets:
@@ -198,7 +231,19 @@ def _job_targets(raw: str) -> list[str]:
             continue
         filtered.append(target)
 
-    return _dedupe_targets(filtered) or list(DEFAULT_JOB_TARGETS)
+    if focus == "global" and filtered and all(_is_hn_target(target) for target in filtered):
+        filtered.extend(target for target in DEFAULT_JOB_TARGETS if not _is_hn_target(target))
+
+    if focus == "india":
+        india_markers = (
+            "india", "indian", "bangalore", "bengaluru", "mumbai", "delhi",
+            "gurgaon", "gurugram", "hyderabad", "pune", "chennai", "noida",
+            "cutshort", "instahyre", "naukri",
+        )
+        filtered = [target for target in filtered if any(marker in target.lower() for marker in india_markers)]
+
+    fallback = INDIA_JOB_TARGETS if focus == "india" else DEFAULT_JOB_TARGETS
+    return _dedupe_targets(filtered) or list(fallback)
 
 
 def _has_x_token(cfg: dict) -> bool:
@@ -334,7 +379,7 @@ async def _ghost_tick():
     if get_setting("ghost_mode") != "true":
         return
 
-    boards = _job_targets(cfg.get("job_boards", ""))
+    boards = _job_targets(cfg.get("job_boards", ""), cfg.get("job_market_focus", "global"))
     has_x = _has_x_token(cfg)
     has_free = _free_sources_enabled(cfg)
     profile = None
@@ -917,7 +962,8 @@ async def _run_scan():
 
     cfg     = get_settings()
     profile = get_profile()
-    raw_urls = _job_targets(cfg.get("job_boards", ""))
+    market_focus = cfg.get("job_market_focus", "global")
+    raw_urls = _job_targets(cfg.get("job_boards", ""), market_focus)
     await _run_x_signal_scan(cfg, "job")
     await _run_free_source_scan(cfg, "job")
 
@@ -925,7 +971,7 @@ async def _run_scan():
     await cm.broadcast({"type": "agent", "event": "query_gen_start",
                         "msg": "Generating profile-tailored search queries…"})
     try:
-        urls = await asyncio.to_thread(_gen_queries, profile, raw_urls)
+        urls = await asyncio.to_thread(_gen_queries, profile, raw_urls, market_focus)
         await cm.broadcast({"type": "agent", "event": "query_gen_done",
                             "msg": f"Search plan ready — {len(urls)} targets"})
         for u in urls:
@@ -1090,12 +1136,31 @@ async def _generate_one(jid: str):
             package["cover_letter"],
             package.get("selected_projects", []),
         )
+        # Save AI-generated outreach messages alongside the package
+        _outreach_fields = {}
+        if package.get("founder_message"):
+            _outreach_fields["outreach_reply"] = package["founder_message"]
+        if package.get("linkedin_note"):
+            _outreach_fields["outreach_dm"] = package["linkedin_note"]
+        if package.get("cold_email"):
+            _outreach_fields["outreach_email"] = package["cold_email"]
+        if _outreach_fields:
+            from db.client import _sq, sql
+            c = _sq.connect(sql)
+            sets = ", ".join(f"{k}=?" for k in _outreach_fields)
+            vals = list(_outreach_fields.values()) + [jid]
+            c.execute(f"UPDATE leads SET {sets} WHERE job_id=?", vals)
+            c.commit()
+            c.close()
         await cm.broadcast({"type": "LEAD_UPDATED", "data": {
             **lead,
             "asset": package["resume"],
             "resume_asset": package["resume"],
             "cover_letter_asset": package["cover_letter"],
             "selected_projects": package.get("selected_projects", []),
+            "outreach_reply": package.get("founder_message", lead.get("outreach_reply", "")),
+            "outreach_dm": package.get("linkedin_note", lead.get("outreach_dm", "")),
+            "outreach_email": package.get("cold_email", lead.get("outreach_email", "")),
             "status": "approved",
         }})
         await cm.broadcast({"type": "agent", "event": "gen_done", "msg": f"Resume and cover letter ready: {lead.get('title','?')}"})
