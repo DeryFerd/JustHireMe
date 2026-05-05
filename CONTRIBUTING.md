@@ -25,7 +25,7 @@ Automation code can be improved, but it should not dominate the main product exp
 
 ## Code Of Conduct
 
-This repository does not yet have a separate `CODE_OF_CONDUCT.md`, but contributors are expected to follow simple rules:
+Contributors are expected to follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). In short:
 
 - Be respectful.
 - Assume good intent.

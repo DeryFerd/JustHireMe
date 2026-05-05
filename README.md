@@ -330,6 +330,8 @@ Contributions are welcome. The best first contribution path is improving sources
 Start here:
 
 - [CONTRIBUTING.md](CONTRIBUTING.md)
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - [docs/source-adapters.md](docs/source-adapters.md)
 - [ROADMAP.md](ROADMAP.md)
 - `.github/ISSUE_TEMPLATE/`
