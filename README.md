@@ -1,114 +1,191 @@
-# JustHireMe
+<p align="center">
+  <img src="docs/assets/justhireme-hero.png" alt="JustHireMe local-first job intelligence workbench hero" width="100%" />
+</p>
 
-**Local-first job intelligence for finding better roles, ranking fit, and generating tailored application material.**
+<h1 align="center">JustHireMe</h1>
 
-JustHireMe is an open-source desktop workbench for job seekers and builders who want a transparent, hackable alternative to noisy job boards and opaque "AI apply" tools. It helps you collect leads from configurable sources, rank them against your profile, explain why each job was shown, and generate tailored resume, cover letter, and outreach drafts.
+<p align="center">
+  <strong>Local-first AI job intelligence for scraping better roles, ranking fit, and generating tailored application materials.</strong>
+</p>
 
-The project is intentionally **local-first**. Your profile, lead history, generated documents, graph data, vector data, and settings live on your machine by default.
+<p align="center">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2ea44f?style=for-the-badge"></a>
+  <img alt="Status: Alpha" src="https://img.shields.io/badge/status-alpha-f59e0b?style=for-the-badge">
+  <img alt="Local First" src="https://img.shields.io/badge/local--first-yes-0ea5e9?style=for-the-badge">
+  <img alt="Desktop: Tauri" src="https://img.shields.io/badge/desktop-Tauri-24c8db?style=for-the-badge">
+  <img alt="Backend: Python" src="https://img.shields.io/badge/backend-Python_3.13-3776ab?style=for-the-badge">
+</p>
 
-```text
-Import profile -> Scrape sources -> Quality gate -> Rank fit -> Match with vectors -> Customize documents/outreach
+<p align="center">
+  <a href="#what-it-does">What It Does</a>
+  ·
+  <a href="#visual-workflow">Workflow</a>
+  ·
+  <a href="#architecture">Architecture</a>
+  ·
+  <a href="#quick-start">Quick Start</a>
+  ·
+  <a href="#contributing">Contributing</a>
+  ·
+  <a href="#roadmap">Roadmap</a>
+</p>
+
+---
+
+## The Short Version
+
+JustHireMe is an open-source desktop workbench for people who are tired of noisy job boards and black-box AI apply tools.
+
+It helps you:
+
+| Stage | What JustHireMe Does | Why It Matters |
+| --- | --- | --- |
+| Scrape | Collect leads from ATS boards, feeds, communities, APIs, and configured sources | You are not locked into one job board |
+| Quality Gate | Reject stale, thin, spammy, senior-only, or low-context leads before they pollute the pipeline | Better signal, less cleanup |
+| Rank | Score lead quality and candidate fit with explainable deterministic rules, feedback learning, and optional LLM reasoning | You can see why a role is worth attention |
+| Match | Use Kuzu graph data and LanceDB vectors to compare jobs against your profile context | Matching is profile-aware, not keyword-only |
+| Customize | Generate tailored resume PDF, cover letter PDF, and outreach drafts | You get a useful package, not just a list of links |
+
+> Browser automation and auto-apply code exists in the repository, but it is experimental and unsupported. The supported OSS core is scraper, ranker, vector matching, and customizer.
+
+---
+
+## Visual Workflow
+
+```mermaid
+flowchart LR
+    A["Import Resume / Profile"] --> B["Profile Graph<br/>Kuzu"]
+    A --> C["Skill + Project Vectors<br/>LanceDB"]
+    D["Scraper Sources"] --> E["Normalized Leads"]
+    E --> F["Lead Quality Gate"]
+    F --> G["Ranker + Evaluator"]
+    B --> G
+    C --> G
+    G --> H["Lead Pipeline"]
+    H --> I["Customizer"]
+    I --> J["Resume PDF"]
+    I --> K["Cover Letter PDF"]
+    I --> L["Outreach Drafts"]
 ```
 
-## Status
+```mermaid
+flowchart TD
+    S["Source Adapter"] --> N["Normalize Lead"]
+    N --> Q{"Quality Gate"}
+    Q -- "Reject" --> R["Filtered with reason"]
+    Q -- "Accept" --> C["Local CRM"]
+    C --> E["Fit Evaluation"]
+    E --> U["User Review"]
 
-JustHireMe is in early alpha and being prepared for a public OSS community. Expect active refactoring, rough edges, and incomplete release tooling. The core direction is stable:
+    Q:::gate
+    R:::reject
+    C:::store
+    E:::score
 
-- scraper
-- ranker
-- vector-backed matching
-- customization package generation
-- local-first desktop workflow
-
-Browser automation and auto-apply code exists in the repository, but it is **experimental, unsupported, and not part of the core product promise**.
-
-## What JustHireMe Does
-
-### 1. Scrape Job Leads
-
-JustHireMe can collect jobs and opportunity signals from configured sources such as:
-
-- ATS/company boards
-- Greenhouse, Lever, Ashby, Workable-style targets
-- RSS feeds
-- Hacker News hiring threads
-- GitHub issue/search-style sources
-- Reddit/community sources
-- Remote job APIs and user-provided targets
-
-The preferred contribution path is direct source adapters for company and ATS boards. Broad search scraping is supported as a fallback, but treated as lower-confidence data.
-
-### 2. Filter Bad Leads Before They Pollute the Pipeline
-
-Scraped data is messy. JustHireMe includes a deterministic lead quality gate that can reject or down-rank:
-
-- missing source/apply URLs
-- thin scraped rows
-- stale jobs
-- senior-only roles in beginner-focused feeds
-- unpaid, spammy, or low-trust postings
-- postings with missing company/context signals
-
-Saved leads carry quality metadata so users and contributors can inspect why a lead was shown.
-
-### 3. Rank Candidate Fit
-
-The backend evaluates each lead against the candidate profile using:
-
-- deterministic rubric scoring
-- seniority caps
-- stack and project evidence
-- red-flag checks
-- source signal
-- optional LLM-assisted evaluation
-- semantic matching when vectors are available
-
-The score is designed to be explainable. A low score should say what is missing; a high score should point to actual evidence.
-
-### 4. Use Graph And Vector Data
-
-The profile system stores structured candidate context:
-
-- skills
-- projects
-- experience
-- certifications
-- education
-- achievements
-- summary/profile text
-
-Kuzu is used for graph-style local profile data. LanceDB stores profile vectors for semantic matching. The intended data flow is:
-
-```text
-Resume/profile ingestion -> structured profile graph -> skill/project embeddings -> semantic fit during job evaluation
+    classDef gate fill:#e0f2fe,stroke:#0284c7,color:#0f172a
+    classDef reject fill:#fee2e2,stroke:#dc2626,color:#0f172a
+    classDef store fill:#dcfce7,stroke:#16a34a,color:#0f172a
+    classDef score fill:#fef3c7,stroke:#d97706,color:#0f172a
 ```
 
-If vector search or embeddings are unavailable, the app falls back to deterministic scoring and makes that fallback visible.
+---
 
-### 5. Generate A Customization Package
+## What It Does
 
-For a promising lead, JustHireMe can generate:
+<table>
+  <tr>
+    <td width="50%">
+      <h3>Scrape From Many Sources</h3>
+      <p>Collect jobs from ATS/company boards, RSS feeds, Hacker News, GitHub-style sources, Reddit/community sources, APIs, and custom configured targets.</p>
+    </td>
+    <td width="50%">
+      <h3>Reject Low-Quality Leads</h3>
+      <p>Apply a deterministic quality gate before saving leads. Filter stale, thin, senior-only, unpaid, spammy, or missing-context postings.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <h3>Rank Fit Transparently</h3>
+      <p>Score role alignment, stack coverage, project evidence, seniority fit, location constraints, red flags, source signal, and semantic profile similarity.</p>
+    </td>
+    <td width="50%">
+      <h3>Generate Tailored Packages</h3>
+      <p>Create a resume PDF, cover letter PDF, founder message, LinkedIn note, cold email, keyword coverage summary, and selected-project rationale.</p>
+    </td>
+  </tr>
+</table>
 
-- tailored resume PDF
-- tailored cover letter PDF
-- founder message
-- LinkedIn note
-- cold email
-- keyword coverage summary
-- selected project rationale
+---
 
-The app does not need auto-apply to be useful. The supported workflow is: find better jobs, understand fit, generate better materials, then apply through the channel you trust.
+## Why This Exists
+
+Most job search tools make one of two mistakes:
+
+| Problem | Result |
+| --- | --- |
+| They scrape too broadly | Users drown in stale, irrelevant, senior-only, or spammy jobs |
+| They automate too aggressively | Users lose control and trust |
+| They rank opaquely | Nobody knows why a job was recommended |
+| They are cloud-first | Sensitive profile/job data leaves the user's machine |
+| They are hard to extend | Contributors cannot easily add new sources or improve ranking |
+
+JustHireMe takes a different path:
+
+```text
+More signal.
+More explanation.
+More local control.
+More contributor-friendly source adapters.
+Less blind automation.
+```
+
+---
 
 ## Product Principles
 
-- **Local-first:** user data should stay on the user's machine by default.
-- **Explainable:** every ranking and filtering decision should be inspectable.
-- **Contributor-friendly:** adding a job source should be straightforward and well-tested.
-- **No fake confidence:** if vectors, models, or source data are unavailable, the app should say so.
-- **Human-controlled:** generated materials are drafts for review, not magic submissions.
-- **Automation is experimental:** browser automation is a lab area, not the core OSS product.
+| Principle | Meaning |
+| --- | --- |
+| Local-first | Profile data, lead history, generated docs, graph data, vectors, and settings live locally by default |
+| Explainable | Every important ranking and filtering decision should have a visible reason |
+| Contributor-friendly | Adding a source adapter should be approachable and testable |
+| Human-controlled | Generated materials are drafts for review, not magic submissions |
+| Honest fallback | If vectors, models, or source data fail, the app should say so |
+| Automation is experimental | Browser automation is a lab area, not the core OSS promise |
 
-## Tech Stack
+---
+
+## Architecture
+
+```mermaid
+flowchart TB
+    subgraph Desktop["Tauri Desktop Shell"]
+        UI["React + TypeScript UI"]
+        Bridge["Tauri Commands<br/>Port + API Token"]
+    end
+
+    subgraph Backend["Python Backend Sidecar"]
+        API["FastAPI + WebSockets"]
+        Scrapers["Scraper Agents"]
+        Gate["Lead Quality Gate"]
+        Ranker["Ranker / Evaluator"]
+        Customizer["Document + Outreach Generator"]
+    end
+
+    subgraph LocalData["Local Data Layer"]
+        SQLite["SQLite CRM"]
+        Kuzu["Kuzu Profile Graph"]
+        LanceDB["LanceDB Vectors"]
+        Files["Generated PDFs"]
+    end
+
+    UI --> Bridge --> API
+    API --> Scrapers --> Gate --> SQLite
+    API --> Ranker
+    Ranker --> Kuzu
+    Ranker --> LanceDB
+    API --> Customizer --> Files
+    API --> SQLite
+```
 
 | Area | Technology |
 | --- | --- |
@@ -118,70 +195,66 @@ The app does not need auto-apply to be useful. The supported workflow is: find b
 | Local CRM | SQLite |
 | Profile graph | Kuzu |
 | Vector store | LanceDB |
-| Agent flow | LangGraph-style backend modules |
-| Document generation | Markdown/PDF rendering |
-| Browser automation lab | Playwright |
+| Matching | Deterministic scoring, semantic search, optional LLM evaluation |
+| Documents | Markdown/PDF rendering |
+| Experimental lab | Playwright browser automation |
 | Packaging | Tauri bundle + Python sidecar |
 
-## Repository Layout
+More detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+
+---
+
+## Repository Map
 
 ```text
 JustHireMe/
-├── src/                         # React frontend
-│   ├── components/              # Shared UI components
-│   ├── hooks/                   # Frontend data/websocket hooks
-│   ├── settings/                # Settings sections
-│   └── views/                   # Main app screens
-├── backend/                     # Python API, agents, ranking, storage
-│   ├── agents/                  # Scrapers, rankers, evaluator, generator
-│   ├── db/                      # SQLite/Kuzu/LanceDB access
-│   ├── graph/                   # Evaluation graph flow
-│   └── tests/                   # Backend regression/API tests
-├── src-tauri/                   # Tauri Rust shell and sidecar config
-├── docs/                        # Contributor and release docs
-├── scripts/                     # Build scripts
-└── .github/                     # CI and issue templates
+|-- src/                         React frontend
+|   |-- components/              Shared UI components
+|   |-- hooks/                   Data and websocket hooks
+|   |-- settings/                Settings panels
+|   `-- views/                   Main screens
+|-- backend/                     Python API and agents
+|   |-- agents/                  Scrapers, rankers, evaluator, generator
+|   |-- db/                      SQLite, Kuzu, LanceDB helpers
+|   |-- graph/                   Evaluation graph flow
+|   `-- tests/                   Backend tests
+|-- src-tauri/                   Tauri Rust shell
+|-- docs/                        Architecture, source adapter, release docs
+|-- scripts/                     Build scripts
+`-- .github/                    CI, issue templates, PR template
 ```
 
-## Requirements
-
-Install these before running the app locally:
-
-- Node.js 20+
-- Rust stable
-- Python 3.13+
-- uv
-- Git
-
-Optional:
-
-- Ollama, for local model experiments
-- Playwright browser dependencies, only if working on experimental automation
+---
 
 ## Quick Start
 
-Clone the repository:
+### Requirements
+
+| Tool | Version |
+| --- | --- |
+| Node.js | 20+ |
+| Python | 3.13+ |
+| Rust | stable |
+| uv | latest stable |
+| Git | any modern version |
+
+Optional:
+
+- Ollama for local model experiments
+- Playwright browser dependencies only for experimental automation work
+
+### Install
 
 ```bash
 git clone https://github.com/vasu-devs/JustHireMe.git
 cd JustHireMe
-```
-
-Install frontend dependencies:
-
-```bash
 npm install
-```
-
-Install backend dependencies:
-
-```bash
 cd backend
 uv sync --dev
 cd ..
 ```
 
-Run the desktop app in development:
+### Run The Desktop App
 
 ```bash
 npm run tauri dev
@@ -189,192 +262,199 @@ npm run tauri dev
 
 The Tauri shell starts the frontend and launches the Python backend sidecar/dev process.
 
+---
+
 ## Development Commands
 
-Frontend typecheck:
+| Task | Command |
+| --- | --- |
+| Frontend dev server | `npm run dev` |
+| Desktop dev app | `npm run tauri dev` |
+| TypeScript check | `npm run typecheck` |
+| Frontend tests | `npm test` |
+| Frontend build | `npm run build` |
+| Backend tests on Windows | `backend/.venv/Scripts/python.exe -m pytest backend/tests` |
+| Backend tests on macOS/Linux | `backend/.venv/bin/python -m pytest backend/tests` |
+| Rust check | `cd src-tauri && cargo check` |
 
-```bash
-npm run typecheck
+---
+
+## Core Concepts
+
+### Source Adapters
+
+Source adapters turn external job sources into normalized lead dictionaries.
+
+```mermaid
+flowchart LR
+    A["Raw Source"] --> B["Adapter"]
+    B --> C["Normalized Lead"]
+    C --> D["Quality Gate"]
+    D --> E["Local CRM"]
 ```
 
-Frontend tests:
+Read: [docs/source-adapters.md](docs/source-adapters.md)
 
-```bash
-npm test
+### Quality Gate
+
+The gate lives in `backend/agents/quality_gate.py`.
+
+It checks:
+
+| Signal | Example |
+| --- | --- |
+| URL exists | Reject rows with no source/apply URL |
+| Posting depth | Penalize thin scraped snippets |
+| Freshness | Penalize stale jobs |
+| Seniority | Reject senior-only roles in beginner-focused feeds |
+| Red flags | Penalize unpaid, commission-only, no-budget, homework, or exposure posts |
+| Company/context | Penalize missing company or unclear source context |
+
+### Ranking
+
+Ranking combines:
+
+- source signal
+- lead quality score
+- deterministic fit rubric
+- seniority caps
+- project and stack evidence
+- optional LLM-assisted evaluation
+- semantic fit when vectors are available
+- feedback learning
+
+### Vector Matching
+
+```mermaid
+flowchart LR
+    Resume["Resume / Profile"] --> Graph["Kuzu Graph"]
+    Resume --> Embed["Embeddings"]
+    Embed --> Vectors["LanceDB"]
+    Job["Job Description"] --> Query["Semantic Query"]
+    Query --> Vectors
+    Vectors --> Fit["Semantic Fit Signal"]
+    Graph --> Fit
 ```
 
-Production frontend build:
+### Customizer
 
-```bash
-npm run build
-```
+For a strong lead, the customizer produces:
 
-Backend tests on Windows:
+| Output | Purpose |
+| --- | --- |
+| Tailored resume PDF | Role-specific resume package |
+| Cover letter PDF | Focused application narrative |
+| Founder message | Short direct outreach |
+| LinkedIn note | Concise connection/message draft |
+| Cold email | Longer outreach draft |
+| Keyword coverage | Shows what the generated package covers |
+| Selected projects | Explains which profile evidence was used |
 
-```bash
-backend/.venv/Scripts/python.exe -m pytest backend/tests
-```
+---
 
-Backend tests on macOS/Linux:
-
-```bash
-backend/.venv/bin/python -m pytest backend/tests
-```
-
-Rust/Tauri check:
-
-```bash
-cd src-tauri
-cargo check
-```
-
-## Configuration
+## Configuration And Privacy
 
 Settings are configured inside the desktop app. For v1, API keys are stored in local app settings.
 
-Supported provider areas include:
+Local data may include:
 
-- global LLM provider
-- evaluator model/provider
-- generator model/provider
-- ingestor model/provider
-- scraper/source settings
-- source quality thresholds
-- experimental automation settings
+| Data | Stored Locally |
+| --- | --- |
+| Profile graph | yes |
+| Vector tables | yes |
+| Lead CRM | yes |
+| Generated PDFs | yes |
+| Settings | yes |
+| Activity history | yes |
 
-Do not share screenshots, logs, local app data, or issue reports that contain API keys, cookies, private resumes, or local database contents.
-
-## Data And Privacy
-
-JustHireMe stores local data under the user's local app data directory. It may include:
-
-- profile graph
-- vector tables
-- SQLite CRM database
-- generated PDFs
-- settings
-- activity history
-- lead metadata
-
-This is useful for privacy and hackability, but it also means your local app data directory is sensitive. Treat it like a private workspace.
+Do not share screenshots, logs, local app data, issue attachments, or database files that contain API keys, cookies, private resumes, or personal data.
 
 Planned improvement:
 
 - OS keychain-backed API key storage
 
-## Core Backend Concepts
-
-### Scraper Sources
-
-Scraper modules collect raw leads and normalize them into a shared lead shape. See:
-
-- `backend/agents/free_scout.py`
-- `backend/agents/scout.py`
-- `docs/source-adapters.md`
-
-### Lead Quality Gate
-
-The quality gate lives in:
-
-- `backend/agents/quality_gate.py`
-
-It evaluates whether a scraped lead is worth saving. It attaches quality score and explanation metadata for UI/debugging.
-
-### Ranking And Evaluation
-
-Ranking and scoring logic lives around:
-
-- `backend/agents/lead_intel.py`
-- `backend/agents/feedback_ranker.py`
-- `backend/agents/scoring_engine.py`
-- `backend/agents/evaluator.py`
-
-### Vector Matching
-
-Semantic matching is handled through:
-
-- `backend/agents/ingestor.py`
-- `backend/agents/semantic.py`
-- `backend/db/client.py`
-
-### Customizer
-
-Document and outreach generation lives in:
-
-- `backend/agents/generator.py`
-
-The customizer produces the user-facing package: resume PDF, cover letter PDF, and outreach drafts.
+---
 
 ## Windows Release Build
 
 The first public packaging target is Windows.
 
-Build the Python sidecar:
-
 ```powershell
 .\scripts\build-sidecar.ps1
-```
-
-Build the Tauri bundle:
-
-```powershell
 npm run tauri build
 ```
 
-See [docs/windows-release.md](docs/windows-release.md) for the smoke test checklist.
+Release smoke test: [docs/windows-release.md](docs/windows-release.md)
+
+---
 
 ## Contributing
 
-Contributions are welcome. The best first contribution path is improving sources and ranking quality.
+The best first contribution path is scraper/source quality.
+
+<table>
+  <tr>
+    <td width="33%">
+      <h3>Good First Issues</h3>
+      <p>Add parser fixtures, improve docs, polish UI copy, or add a small source rule.</p>
+    </td>
+    <td width="33%">
+      <h3>Source Contributors</h3>
+      <p>Add ATS/company-board adapters with normalized lead fields and quality-gate tests.</p>
+    </td>
+    <td width="33%">
+      <h3>Ranking Contributors</h3>
+      <p>Improve score bands, seniority handling, semantic fallback, and feedback learning.</p>
+    </td>
+  </tr>
+</table>
 
 Start here:
 
-- [CONTRIBUTING.md](CONTRIBUTING.md)
-- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- [docs/source-adapters.md](docs/source-adapters.md)
-- [ROADMAP.md](ROADMAP.md)
-- `.github/ISSUE_TEMPLATE/`
-
-Good first contribution areas:
-
-- add a source adapter
-- add scraper fixtures
-- improve lead quality rules
-- improve ranker tests
-- document local Ollama setup
-- improve Windows installer instructions
-- improve UI copy around fit explanations
+| Document | Purpose |
+| --- | --- |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution rules and development workflow |
+| [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Community standards |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design |
+| [docs/source-adapters.md](docs/source-adapters.md) | Scraper adapter contract |
+| [ROADMAP.md](ROADMAP.md) | Project direction |
+| [SECURITY.md](SECURITY.md) | Privacy and responsible reporting |
 
 Please do not open public issues with API keys, resumes, cookies, bearer tokens, or database files.
 
-## Issue Types
-
-Use the provided issue templates:
-
-- bug report
-- scraper source request
-- ranker/scoring improvement
-- docs task
-- good first issue
-
-When reporting ranking issues, include sanitized job snippets and expected behavior. The most useful reports explain why a lead should have been shown, hidden, scored higher, or scored lower.
+---
 
 ## Experimental Automation
 
-The repository contains browser automation and auto-apply code. This exists for experimentation and future plugin work, but it is not the supported core workflow.
+The repository contains browser automation and auto-apply code for experimentation and future plugin work.
 
-Current stance:
+| Status | Meaning |
+| --- | --- |
+| Disabled by default | Not part of the supported job workflow |
+| Unsupported lab | Useful for contributors, not normal users |
+| Not marketed as core | The product works without it |
+| Potential future plugin | May be separated later |
 
-- not marketed as a core feature
-- not required for useful job search
-- disabled by default
-- should be treated carefully by contributors
-- may become an optional plugin later
+---
 
 ## Roadmap
 
-See [ROADMAP.md](ROADMAP.md).
+```mermaid
+timeline
+    title JustHireMe OSS Roadmap
+    v0.1 : OSS readiness
+         : Quality gate
+         : Source adapter docs
+    v0.2 : More ATS adapters
+         : Parser fixtures
+         : Better source quality dashboards
+    v0.3 : Ranking evaluation dataset
+         : Semantic matching visibility
+         : Feedback learning improvements
+    Future : OS keychain support
+           : Cross-platform installers
+           : Optional automation plugin
+```
 
 Near-term priorities:
 
@@ -385,10 +465,16 @@ Near-term priorities:
 - contributor-friendly source plugin boundaries
 - OS keychain support for API keys
 
+---
+
 ## License
 
 JustHireMe is released under the [MIT License](LICENSE).
 
+---
+
 ## Maintainer Note
 
-This project is being built in the open because one person cannot cover every job source, every market, every ranking edge case, and every packaging path alone. The goal is to make a useful local tool and a welcoming codebase where contributors can add sources, improve ranking, and help job seekers get better signal with less noise.
+This project is being built in the open because one person cannot cover every job source, every market, every ranking edge case, and every packaging path alone.
+
+The goal is a useful local tool and a welcoming codebase where contributors can add sources, improve ranking, and help job seekers get better signal with less noise.
