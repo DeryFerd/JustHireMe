@@ -10,6 +10,7 @@ import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from pydantic import BaseModel, Field
+from agents.quality_gate import MIN_DEFAULT_QUALITY, attach_quality_metadata, evaluate_lead_quality
 from db.client import url_exists, save_lead
 from logger import get_logger
 
@@ -883,6 +884,7 @@ def run(
     apify_token: str | None = None,
     apify_actor: str | None = None,
     headed: bool = False,
+    min_quality: int = MIN_DEFAULT_QUALITY,
 ) -> list:
     leads = []
     
@@ -959,6 +961,13 @@ def run(
                 "seniority_level": classify_job_seniority(item),
                 "is_fresh": _is_fresh_lead(item),
             }
+            item = {**item, "source_meta": {**(item.get("source_meta") or {}), **source_meta}}
+            quality = evaluate_lead_quality(item, min_quality=min_quality)
+            item = attach_quality_metadata(item, quality)
+            if not quality.get("accepted"):
+                LAST_ERRORS.append(f"filtered {plat}:{u} - {quality.get('reason', 'quality gate')}")
+                continue
+            source_meta = item["source_meta"]
             save_lead(jid, t, co, u, plat, desc, source_meta=source_meta)
             leads.append({
                 "job_id": jid, "title": t, "company": co, "url": u,

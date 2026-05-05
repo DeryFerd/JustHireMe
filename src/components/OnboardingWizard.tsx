@@ -114,7 +114,7 @@ export function OnboardingWizard({ api, onFinish, onOpenSettings }: { api: ApiFe
             <div className="eyebrow">First Run</div>
             <h2 style={{ fontSize: 30, fontWeight: 800, marginTop: 6 }}>Get to your first package</h2>
             <p style={{ color: "var(--ink-2)", fontSize: 13.5, lineHeight: 1.55, marginTop: 8 }}>
-              Import your resume, set the basics, then open the one-shot Apply page with a demo job ready.
+              Import your resume, set the basics, then open the one-shot customization page with a demo job ready.
             </p>
           </div>
           {progress}
@@ -123,7 +123,7 @@ export function OnboardingWizard({ api, onFinish, onOpenSettings }: { api: ApiFe
             <div style={{ marginTop: 4 }}>
               {step === 0 && "Your profile graph starts with resume data."}
               {step === 1 && "These defaults shape scoring, generation, and source selection."}
-              {step === 2 && "The demo opens directly in Apply with all generated outputs on one page."}
+              {step === 2 && "The demo opens directly in Customize with all generated outputs on one page."}
             </div>
           </div>
           <button className="btn btn-ghost" onClick={() => onFinish(DEMO_JOB_DRAFT)} style={{ alignSelf: "flex-start" }}>

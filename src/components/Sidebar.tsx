@@ -2,13 +2,13 @@ import Icon from "./Icon";
 import type { View } from "../types";
 
 const NAV = [
-  { id: "apply",     label: "Apply",         icon: "spark",  tone: "green"  },
+  { id: "apply",     label: "Customize",     icon: "spark",  tone: "green"  },
   { id: "dashboard", label: "Dashboard",     icon: "home",   tone: "blue"   },
-  { id: "inbox",     label: "Lead Inbox",    icon: "plus",   tone: "orange" },
+  { id: "inbox",     label: "Leads",         icon: "plus",   tone: "orange" },
   { id: "pipeline",  label: "Job Pipeline",  icon: "layers", tone: "purple" },
   { id: "graph",     label: "Knowledge",     icon: "graph",  tone: "green"  },
   { id: "activity",  label: "Activity",      icon: "pulse",  tone: "orange" },
-  { id: "profile",   label: "Identity Graph",icon: "user",   tone: "pink"   },
+  { id: "profile",   label: "Profile",       icon: "user",   tone: "pink"   },
   { id: "ingestion", label: "Add Context",   icon: "plus",   tone: "teal"   },
 ];
 

@@ -2,11 +2,11 @@ import { useState } from "react";
 import type { LogLine } from "../types";
 
 export function ActivityView({ logs }: { logs: LogLine[] }) {
-  const [actTab, setActTab] = useState<"all"|"scout"|"eval"|"apply"|"system">("all");
+  const [actTab, setActTab] = useState<"all"|"scout"|"eval"|"customize"|"system">("all");
   return (
     <div className="scroll" style={{ padding: 24, flex: 1, height: "100%", minHeight: 0 }}>
       <div style={{display:"flex", gap:6, marginBottom:16, flexWrap:"wrap"}}>
-        {(["all","scout","eval","apply","system"] as const).map(tab => (
+        {(["all","scout","eval","customize","system"] as const).map(tab => (
           <button key={tab} onClick={() => setActTab(tab)} style={{
             padding:"5px 14px", borderRadius:999, fontSize:11, fontWeight:700,
             letterSpacing:"0.1em", textTransform:"uppercase", cursor:"pointer",
@@ -15,7 +15,7 @@ export function ActivityView({ logs }: { logs: LogLine[] }) {
             color: actTab === tab ? "var(--card)" : "var(--ink-3)",
             transition:"all 0.15s ease",
           }}>
-            {tab === "all" ? "All" : tab === "scout" ? "Scout" : tab === "eval" ? "Eval" : tab === "apply" ? "Apply" : "System"}
+            {tab === "all" ? "All" : tab === "scout" ? "Scout" : tab === "eval" ? "Eval" : tab === "customize" ? "Customize" : "System"}
           </button>
         ))}
       </div>
@@ -36,7 +36,7 @@ export function ActivityView({ logs }: { logs: LogLine[] }) {
               if (actTab === "all") return l.kind !== "heartbeat";
               if (actTab === "scout") return l.src === "scout" || (l.kind === "agent" && l.msg.toLowerCase().includes("scout"));
               if (actTab === "eval")  return l.src === "eval"  || (l.kind === "agent" && (l.msg.toLowerCase().includes("eval") || l.msg.toLowerCase().includes("scor")));
-              if (actTab === "apply") return l.src === "apply" || (l.kind === "agent" && (l.msg.toLowerCase().includes("apply") || l.msg.toLowerCase().includes("fire") || l.msg.toLowerCase().includes("generat")));
+              if (actTab === "customize") return l.src === "apply" || (l.kind === "agent" && (l.msg.toLowerCase().includes("custom") || l.msg.toLowerCase().includes("generat") || l.msg.toLowerCase().includes("package")));
               if (actTab === "system") return l.kind === "system";
               return true;
             }).map((ln) => {

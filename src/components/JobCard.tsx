@@ -16,6 +16,8 @@ export function JobCard({ lead, onOpen, onDelete, showScore = false, showGenerat
   const [generating, setGenerating] = useState(false);
   const desc = lead.description?.trim();
   const signalScore = lead.signal_score || 0;
+  const qualityReason = String(lead.lead_quality_reason || lead.source_meta?.lead_quality_reason || "");
+  const qualityScore = Number(lead.lead_quality_score || lead.source_meta?.lead_quality_score || 0);
   const isHotX = lead.platform === "x" && signalScore >= 80;
   const level = leadSeniority(lead);
   const levelTone = seniorityTone(level);
@@ -112,6 +114,12 @@ export function JobCard({ lead, onOpen, onDelete, showScore = false, showGenerat
         </div>
       )}
 
+      {qualityReason && (
+        <div style={{ fontSize: 11.5, color: "var(--ink-3)", lineHeight: 1.5, borderLeft: "2px solid var(--blue)", paddingLeft: 8 }}>
+          Shown by quality gate{qualityScore ? ` (${qualityScore})` : ""}: {qualityReason.slice(0, 150)}{qualityReason.length > 150 ? "..." : ""}
+        </div>
+      )}
+
       {/* Footer */}
       <div className="row" style={{ justifyContent: "space-between", alignItems: "center", marginTop: 2 }}>
         <button
@@ -163,6 +171,7 @@ export function PipelineJobCard({ lead, onOpen, onDelete, showGenerate = false, 
   const [generating, setGenerating] = useState(false);
   const signalScore = lead.signal_score || 0;
   const matchScore = lead.score || 0;
+  const qualityScore = Number(lead.lead_quality_score || lead.source_meta?.lead_quality_score || 0);
   const isHotX = lead.platform === "x" && signalScore >= 80;
   const level = leadSeniority(lead);
   const levelTone = seniorityTone(level);
@@ -205,6 +214,7 @@ export function PipelineJobCard({ lead, onOpen, onDelete, showGenerate = false, 
         <div className="pipeline-score-stack">
           {matchScore > 0 && <span className={`pipeline-score ${matchScore >= 76 ? "good" : matchScore >= 50 ? "warn" : "bad"}`}>Fit {matchScore}</span>}
           {signalScore > 0 && <span className={`pipeline-score ${signalScore >= 80 ? "hot" : signalScore >= 60 ? "warn" : ""}`}>Signal {signalScore}</span>}
+          {qualityScore > 0 && <span className={`pipeline-score ${qualityScore >= 80 ? "hot" : qualityScore >= 60 ? "warn" : ""}`}>Quality {qualityScore}</span>}
         </div>
         <div className="pipeline-job-actions">
           {showGenerate && (

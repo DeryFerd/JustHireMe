@@ -50,7 +50,7 @@ export default function SettingsModal({ api, onClose }: Props) {
           <div>
             <div className="eyebrow">Configuration</div>
             <h2 style={{ fontSize: 26, marginTop: 2 }}>Settings</h2>
-            <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 3 }}>Set a global default, then override each step's model, provider, or key independently</div>
+            <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 3 }}>Configure local keys, scraper thresholds, ranker behavior, and customization models</div>
           </div>
           <button className="btn btn-icon" onClick={onClose}><Icon name="x" size={15} /></button>
         </div>

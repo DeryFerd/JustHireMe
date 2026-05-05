@@ -15,8 +15,6 @@ export function ApplyJobView({ port, api, leads, openDrawer, initialInput, autoF
   const [coverBlobUrl, setCoverBlobUrl] = useState<string | null>(null);
   const [resumeLoadErr, setResumeLoadErr] = useState<string | null>(null);
   const [coverLoadErr, setCoverLoadErr] = useState<string | null>(null);
-  const [fireBusy, setFireBusy] = useState(false);
-  const [fireMsg, setFireMsg] = useState<string | null>(null);
 
   const liveLead = lead ? (leads.find(l => l.job_id === lead.job_id) || lead) : null;
   const resumeReady = Boolean(liveLead?.resume_asset || liveLead?.asset);
@@ -113,7 +111,6 @@ export function ApplyJobView({ port, api, leads, openDrawer, initialInput, autoF
     if (!port || !api || busy || !input.trim()) return;
     setBusy(true);
     setErr(null);
-    setFireMsg(null);
     setResumeBlobUrl(null);
     setCoverBlobUrl(null);
     try {
@@ -138,24 +135,6 @@ export function ApplyJobView({ port, api, leads, openDrawer, initialInput, autoF
     }
   };
 
-  const fire = async () => {
-    if (!port || !api || !liveLead || !resumeReady || !coverReady || fireBusy) return;
-    setFireBusy(true);
-    setFireMsg(null);
-    try {
-      const r = await api(`/api/v1/fire/${liveLead.job_id}`, { method: "POST" });
-      if (!r.ok) {
-        const detail = await r.json().then(d => d.detail).catch(() => "");
-        throw new Error(detail || `Server returned ${r.status}`);
-      }
-      setFireMsg("Application automation started.");
-    } catch (e) {
-      setFireMsg(e instanceof Error ? e.message : "Could not start application automation");
-    } finally {
-      setFireBusy(false);
-    }
-  };
-
   const copyText = (value: string) => navigator.clipboard?.writeText(value);
   const stepTone = (done: boolean, active: boolean) => done ? "green" : active ? "purple" : "blue";
   const stepPill = (label: string, done: boolean, active: boolean) => {
@@ -172,9 +151,9 @@ export function ApplyJobView({ port, api, leads, openDrawer, initialInput, autoF
       <div style={{ maxWidth: 1180, margin: "0 auto", display: "grid", gridTemplateColumns: liveLead ? "420px minmax(0, 1fr)" : "minmax(0, 880px)", gap: 18, alignItems: "start", justifyContent: "center" }}>
         <section className="card" style={{ padding: 22, display: "flex", flexDirection: "column", gap: 16 }}>
           <div>
-            <div className="eyebrow">Apply to this job</div>
+            <div className="eyebrow">Customize for this job</div>
             <h2 style={{ fontSize: 24, fontWeight: 700, marginTop: 5, marginBottom: 6 }}>Paste a job URL.</h2>
-            <div style={{ fontSize: 13, color: "var(--ink-3)", lineHeight: 1.55 }}>Analyse fit, generate the resume and cover letter, then copy outreach from one page.</div>
+            <div style={{ fontSize: 13, color: "var(--ink-3)", lineHeight: 1.55 }}>Analyse fit, generate the resume and cover letter, then copy outreach drafts from one page.</div>
           </div>
           <textarea
             ref={inputRef}
@@ -203,7 +182,7 @@ export function ApplyJobView({ port, api, leads, openDrawer, initialInput, autoF
           <section style={{ display: "flex", flexDirection: "column", gap: 14, minWidth: 0 }}>
             <div className="card" style={{ padding: 18, display: "flex", justifyContent: "space-between", gap: 14, alignItems: "flex-start", flexWrap: "wrap" }}>
               <div style={{ minWidth: 0 }}>
-                <div className="eyebrow">Application Package</div>
+              <div className="eyebrow">Customization Package</div>
                 <h3 style={{ fontSize: 18, fontWeight: 700, marginTop: 5 }}>{roleFromLead(liveLead)}</h3>
                 <div style={{ fontSize: 13, color: "var(--ink-2)", marginTop: 3 }}>{liveLead.company || "Unknown company"}</div>
               </div>
@@ -351,9 +330,9 @@ export function ApplyJobView({ port, api, leads, openDrawer, initialInput, autoF
             )}
 
             <div className="card" style={{ padding: 16, display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-              <div style={{ fontSize: 12.5, color: "var(--ink-2)" }}>{fireMsg || "Ready package can be sent to the application form."}</div>
-              <button className="btn btn-accent" onClick={fire} disabled={!resumeReady || !coverReady || fireBusy} style={{ minWidth: 170, justifyContent: "center" }}>
-                <Icon name="fire" size={14} color="#fff" /> {fireBusy ? "Starting..." : "Fire Application"}
+              <div style={{ fontSize: 12.5, color: "var(--ink-2)" }}>Ready package: use the generated documents and outreach drafts wherever you apply.</div>
+              <button className="btn" onClick={() => liveLead && openDrawer(liveLead)} disabled={!liveLead} style={{ minWidth: 170, justifyContent: "center" }}>
+                <Icon name="file" size={14} /> Review Package
               </button>
             </div>
           </section>

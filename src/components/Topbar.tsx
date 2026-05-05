@@ -3,13 +3,13 @@ import type { View } from "../types";
 
 export function Topbar({ view }: { view: View }) {
   const titles: Record<View, string> = {
-    apply:     "Apply to This Job",
+    apply:     "Customize Package",
     dashboard: "Command Center",
-    inbox:     "Lead Inbox",
+    inbox:     "Leads",
     pipeline:  "Job Pipeline",
     graph:     "Knowledge Graph",
     activity:  "Live Activity",
-    profile:   "Identity Graph",
+    profile:   "Profile",
     ingestion: "Add Context",
   };
   return (

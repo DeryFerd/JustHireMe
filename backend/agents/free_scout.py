@@ -21,6 +21,7 @@ from agents.lead_intel import (
     tech_stack_from_text,
     urgency_from_text,
 )
+from agents.quality_gate import MIN_DEFAULT_QUALITY, attach_quality_metadata, evaluate_lead_quality
 from agents.scout import _is_recent, _strip_html_text, classify_job_seniority
 from db.client import rank_lead_by_feedback, save_lead, url_exists
 from logger import get_logger
@@ -430,7 +431,7 @@ def run(
     targets: list[str] | None = None,
     kind_filter: str | None = None,
     max_requests: int = 20,
-    min_signal_score: int = 45,
+    min_signal_score: int = MIN_DEFAULT_QUALITY,
 ) -> list[dict]:
     global LAST_ERRORS, LAST_USAGE
     LAST_ERRORS = []
@@ -443,7 +444,7 @@ def run(
     try:
         min_score = max(0, min(int(min_signal_score or 45), 100))
     except Exception:
-        min_score = 45
+        min_score = MIN_DEFAULT_QUALITY
     LAST_USAGE = {"configured": len(all_targets), "executed": 0, "saved": 0, "filtered": 0}
     leads: list[dict] = []
     seen: set[str] = set()
@@ -462,6 +463,12 @@ def run(
                 LAST_USAGE["filtered"] += 1
                 continue
             item = rank_lead_by_feedback(item)
+            quality = evaluate_lead_quality(item, min_quality=min_score)
+            item = attach_quality_metadata(item, quality)
+            if not quality.get("accepted"):
+                LAST_USAGE["filtered"] += 1
+                LAST_ERRORS.append(f"filtered {item.get('platform', 'free')}:{item.get('url', '')} - {quality.get('reason', 'quality gate')}")
+                continue
             if (item.get("signal_score") or 0) < min_score:
                 LAST_USAGE["filtered"] += 1
                 continue

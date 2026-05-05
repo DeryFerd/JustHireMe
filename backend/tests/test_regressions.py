@@ -917,6 +917,88 @@ class TestScoringEngineCaps(unittest.TestCase):
             self.assertGreaterEqual(result.score, 0)
             self.assertLessEqual(result.score, 100)
 
+    def test_semantic_unavailable_is_visible_fallback(self):
+        result = self._score(
+            "Junior Frontend Developer - React, TypeScript",
+            self._profile(0),
+        )
+        self.assertTrue(
+            any("Semantic matching unavailable" in gap for gap in result.gaps),
+            "Fallback scoring should make unavailable semantic matching visible",
+        )
+
+
+class TestLeadQualityGate(unittest.TestCase):
+    def _quality(self, lead: dict, min_quality: int = 60):
+        from agents.quality_gate import evaluate_lead_quality
+
+        return evaluate_lead_quality(lead, min_quality=min_quality)
+
+    def test_valid_junior_job_is_accepted(self):
+        quality = self._quality({
+            "title": "Junior React Developer",
+            "company": "Acme",
+            "url": "https://jobs.example.com/junior-react",
+            "platform": "greenhouse",
+            "description": "Entry-level remote role building React, TypeScript, API workflows. Apply with portfolio.",
+            "posted_date": "today",
+            "signal_score": 88,
+        })
+        self.assertTrue(quality["accepted"])
+        self.assertGreaterEqual(quality["score"], 60)
+
+    def test_senior_only_role_is_rejected_for_beginner_feed(self):
+        quality = self._quality({
+            "title": "Senior Staff Software Engineer",
+            "company": "Acme",
+            "url": "https://jobs.example.com/staff",
+            "platform": "lever",
+            "description": "Senior Staff engineer role. Requires 7+ years with React, Node, system design, and team leadership.",
+            "posted_date": "today",
+            "signal_score": 90,
+        })
+        self.assertFalse(quality["accepted"])
+        self.assertIn("senior-only", quality["reason"])
+
+    def test_stale_lead_is_rejected(self):
+        quality = self._quality({
+            "title": "Junior Python Developer",
+            "company": "Acme",
+            "url": "https://jobs.example.com/old",
+            "platform": "rss",
+            "description": "Junior Python FastAPI role with remote work, clear apply path, and API integrations.",
+            "posted_date": "2020-01-01",
+            "signal_score": 85,
+        })
+        self.assertFalse(quality["accepted"])
+        self.assertIn("stale posting", quality["reason"])
+
+    def test_thin_post_is_penalized(self):
+        quality = self._quality({
+            "title": "React dev",
+            "company": "",
+            "url": "https://jobs.example.com/thin",
+            "platform": "search",
+            "description": "React job apply",
+            "posted_date": "today",
+            "signal_score": 65,
+        })
+        self.assertFalse(quality["accepted"])
+        self.assertIn("thin scraped posting", quality["reason"])
+
+    def test_red_flag_lead_is_rejected(self):
+        quality = self._quality({
+            "title": "Frontend Developer",
+            "company": "Unknown",
+            "url": "https://jobs.example.com/free-trial",
+            "platform": "reddit",
+            "description": "Build React frontend and API integration. This is unpaid and for exposure, apply today.",
+            "posted_date": "today",
+            "signal_score": 82,
+        })
+        self.assertFalse(quality["accepted"])
+        self.assertIn("red flags", quality["reason"])
+
 
 if __name__ == "__main__":
     unittest.main()

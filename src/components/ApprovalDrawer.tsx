@@ -27,6 +27,7 @@ export function ApprovalDrawer({ j, api, onClose, onFired }: {
   const [versions, setVersions] = useState<VersionEntry[]>([]);
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
   const [versionErr, setVersionErr] = useState<string | null>(null);
+  const [experimentalAutoApply, setExperimentalAutoApply] = useState(false);
 
   const resumeReady = Boolean(j.resume_asset || j.asset);
   const coverReady = Boolean(j.cover_letter_asset);
@@ -47,7 +48,9 @@ export function ApprovalDrawer({ j, api, onClose, onFired }: {
   const coveredTerms: string[] = Array.isArray(coverage.covered_terms) ? coverage.covered_terms : [];
   const coveragePct = typeof coverage.coverage_pct === "number" ? coverage.coverage_pct : null;
   const hasCoverage = missingTerms.length > 0 || incorporatedTerms.length > 0 || coveredTerms.length > 0;
-  const canFire = resumeReady && coverReady && !firing;
+  const qualityScore = Number(j.lead_quality_score || j.source_meta?.lead_quality_score || 0);
+  const qualityReason = String(j.lead_quality_reason || j.source_meta?.lead_quality_reason || "");
+  const canFire = experimentalAutoApply && resumeReady && coverReady && !firing;
   const display = leadDisplayHeading(j);
   const originalTitle = cleanLeadText(j.title);
   const descriptionText = cleanLeadText(j.description);
@@ -75,6 +78,13 @@ export function ApprovalDrawer({ j, api, onClose, onFired }: {
   useEffect(() => {
     loadVersions();
   }, [loadVersions, j.resume_asset, j.cover_letter_asset, j.resume_version]);
+
+  useEffect(() => {
+    api("/api/v1/settings")
+      .then(r => r.ok ? r.json() : {})
+      .then((cfg: Record<string, string>) => setExperimentalAutoApply(cfg.auto_apply === "true"))
+      .catch(() => setExperimentalAutoApply(false));
+  }, [api]);
 
   // Tauri WebView blocks <iframe src="http://..."> for localhost � fetch as blob instead
   useEffect(() => {
@@ -554,6 +564,15 @@ export function ApprovalDrawer({ j, api, onClose, onFired }: {
               </div>
             )}
 
+            {qualityReason && (
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>Why This Lead Was Shown</div>
+                <div style={{ fontSize: 12.5, color: "var(--ink-2)", lineHeight: 1.6, background: "var(--blue-soft)", borderRadius: 10, padding: "10px 12px", border: "1px solid var(--blue)" }}>
+                  {qualityScore ? `Quality ${qualityScore}: ` : ""}{qualityReason}
+                </div>
+              </div>
+            )}
+
             {j.match_points?.length > 0 && (
               <div>
                 <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Match Points</div>
@@ -591,19 +610,23 @@ export function ApprovalDrawer({ j, api, onClose, onFired }: {
             </div>
             <div style={{ textAlign: "center", padding: 16, borderTop: "1px solid var(--line)", background: "var(--paper)", flexShrink: 0 }}>
               {done
-                ? <div style={{ fontSize: 15, color: "var(--ok)", fontWeight: 700 }}>Fired - automation running</div>
+                ? <div style={{ fontSize: 15, color: "var(--ok)", fontWeight: 700 }}>Experimental automation running</div>
                 : <>
                     <button className="btn btn-accent" onClick={fire} disabled={!canFire} style={{ fontSize: 15, padding: "12px 24px", width: "100%", cursor: canFire ? "pointer" : "not-allowed", opacity: canFire ? 1 : 0.58, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-                      <Icon name="fire" size={15} color="#fff" /> {firing ? "Firing..." : "Fire Application"}
+                      <Icon name="fire" size={15} color="#fff" /> {firing ? "Starting..." : "Experimental Auto Apply"}
                     </button>
                     {fireErr ? (
                       <div style={{ marginTop: 8, fontSize: 11.5, color: "var(--bad)", lineHeight: 1.45 }}>
                         {fireErr}
                       </div>
                     ) : null}
-                    {!resumeReady || !coverReady ? (
+                    {!experimentalAutoApply ? (
                       <div style={{ marginTop: 8, fontSize: 11.5, color: "var(--ink-3)", lineHeight: 1.45 }}>
-                        Generate the resume and cover letter before firing the application.
+                        Auto-apply is an unsupported contributor lab. Enable Experimental Auto Apply in settings to test it.
+                      </div>
+                    ) : !resumeReady || !coverReady ? (
+                      <div style={{ marginTop: 8, fontSize: 11.5, color: "var(--ink-3)", lineHeight: 1.45 }}>
+                        Generate the resume and cover letter before testing experimental automation.
                       </div>
                     ) : null}
                   </>

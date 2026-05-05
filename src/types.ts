@@ -49,6 +49,7 @@ export interface Lead {
   fit_bullets?: string[]; followup_sequence?: string[]; proof_snippet?: string;
   tech_stack?: string[]; location?: string; urgency?: string;
   seniority_level?: string;
+  lead_quality_score?: number; lead_quality_reason?: string;
   source_meta?: Record<string, any>; feedback?: string; feedback_note?: string;
   followup_due_at?: string; last_contacted_at?: string;
   events?: { action: string; ts: string }[];

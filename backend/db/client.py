@@ -416,6 +416,8 @@ def _lead_row_dict(r) -> dict:
         "outreach_reply": r[19] or "",
         "outreach_dm": r[20] or "",
         "source_meta": source_meta,
+        "lead_quality_score": source_meta.get("lead_quality_score") or 0,
+        "lead_quality_reason": source_meta.get("lead_quality_reason") or "",
         "keyword_coverage": source_meta.get("keyword_coverage") or {},
         "contact_lookup": source_meta.get("contact_lookup") or {},
         "feedback": r[22] or "",

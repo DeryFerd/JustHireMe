@@ -355,7 +355,7 @@ async def _run_free_source_scan(cfg: dict, kind_filter: str | None = None) -> li
         raw_watchlist=cfg.get("company_watchlist", ""),
         kind_filter=kind_filter,
         max_requests=_int_cfg(cfg, "free_source_max_requests", 20, 1, 80),
-        min_signal_score=_int_cfg(cfg, "free_source_min_signal_score", 45, 0, 100),
+        min_signal_score=_int_cfg(cfg, "free_source_min_signal_score", 60, 0, 100),
     )
     usage = getattr(free_scout, "LAST_USAGE", {}) or {}
     await cm.broadcast({

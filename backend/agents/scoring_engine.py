@@ -1091,4 +1091,7 @@ def score_job_lead(jd: str, candidate_data: dict) -> ScoreResult:
     direct, adjacent, missing = _direct_and_adjacent(posting, candidate)
     raw = _weighted_total(criteria)
     final, caps = _apply_caps(raw, posting, candidate, direct, adjacent)
-    return _result(final, criteria, posting, candidate, direct, adjacent, missing, caps)
+    result = _result(final, criteria, posting, candidate, direct, adjacent, missing, caps)
+    if semantic is None:
+        result.gaps.append("Semantic matching unavailable; used deterministic keyword/rubric scoring.")
+    return result
