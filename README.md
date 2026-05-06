@@ -580,10 +580,14 @@ Near-term priorities:
 
 JustHireMe is released under the [JustHireMe Personal Open Source License](LICENSE).
 
-Personal, educational, research, evaluation, and non-commercial use are allowed.
-Any commercial use, selling, paid service, revenue generation, or business use
-requires prior written permission from Vasudev Siddh or vasu-devs and a separate
-royalty agreement.
+Personal, educational, research, evaluation, and other non-commercial use are
+allowed. Any monetary use is prohibited without express prior written permission
+from Vasudev Siddh or vasu-devs.
+
+Commercial use includes selling, paid services, hosted services, client work,
+business operations, advertising or subscription revenue, commissions, lead
+generation, paid integrations, or any other direct or indirect financial benefit.
+Approved commercial use requires a separate written royalty agreement.
 
 ---
 

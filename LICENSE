@@ -7,27 +7,47 @@ other files in this repository unless a file states otherwise.
 
 1. Personal Use Grant
 
-You may use, copy, study, modify, and share this software for personal,
-educational, research, evaluation, and non-commercial purposes, provided that
-you preserve this license notice and all copyright notices in copies or
-substantial portions of the software.
+Subject to the restrictions below, you may use, copy, study, modify, and share
+this software only for personal, educational, research, evaluation, and other
+non-commercial purposes, provided that you preserve this license notice and all
+copyright notices in copies or substantial portions of the software.
 
-2. Commercial Use Requires Permission
+2. Strict No-Commercial-Use Restriction
 
-You may not use this software, modified versions of this software, or any
-substantial portion of this software for any commercial purpose without prior
-written permission from Vasudev Siddh or vasu-devs.
+You may not use this software, modified versions of this software, derivative
+works, outputs, hosted versions, integrations, or any substantial portion of
+this software for any Commercial Use or Monetary Benefit unless you first
+receive express prior written permission from Vasudev Siddh or vasu-devs.
 
-Commercial purpose includes, but is not limited to:
+No commercial rights are granted by this license. Silence, public availability
+of the source code, repository access, downloads, forks, issues, pull requests,
+or prior personal use do not create permission for Commercial Use or Monetary
+Benefit.
 
-- selling, licensing, sublicensing, renting, or offering the software;
-- using the software to provide paid services, hosted services, consulting,
-  client work, or internal business operations;
-- bundling the software with a paid product or service;
-- using the software to generate revenue, advertising income, subscription
-  income, commissions, leads, or other commercial advantage.
+3. Commercial Use and Monetary Benefit
 
-3. Royalties
+Commercial Use and Monetary Benefit include, but are not limited to:
+
+- selling, licensing, sublicensing, renting, leasing, or offering the software;
+- charging for access to the software or to a product, service, platform, API,
+  hosted system, marketplace listing, or workflow that uses the software;
+- using the software for paid services, hosted services, consulting, client
+  work, agency work, freelancing, contracting, or commissioned work;
+- using the software in internal business operations, business automation,
+  commercial research, lead generation, recruiting operations, sales operations,
+  or revenue-generating workflows;
+- bundling, embedding, integrating, white-labeling, or distributing the software
+  with any paid, sponsored, monetized, or commercially supported product or
+  service;
+- using the software to generate or support revenue, advertising income,
+  sponsorship income, subscription income, commissions, affiliate income, leads,
+  data products, paid reports, paid recommendations, or any other direct or
+  indirect financial advantage;
+- using the software in a way that avoids payment, royalties, licensing fees, or
+  commercial permission that would otherwise be owed to Vasudev Siddh or
+  vasu-devs.
+
+4. Permission and Royalties
 
 Any approved commercial use must be governed by a separate written agreement
 with Vasudev Siddh or vasu-devs. That agreement must define the required
@@ -35,18 +55,31 @@ royalties, payment terms, scope of use, duration, and any other commercial
 conditions. No commercial rights are granted until that written agreement is in
 effect.
 
-4. No Trademark Rights
+Commercial permission must be explicit, written, and signed or otherwise
+confirmed by Vasudev Siddh or an authorized representative of vasu-devs. A
+general conversation, informal interest, repository interaction, contribution,
+fork, star, download, or issue comment is not commercial permission.
+
+5. Termination
+
+If you violate this license, including by using the software for Commercial Use
+or Monetary Benefit without prior written permission, your rights under this
+license terminate automatically. Upon termination, you must immediately stop
+using, copying, modifying, hosting, distributing, or otherwise exploiting the
+software and any derivative works.
+
+6. No Trademark Rights
 
 This license does not grant permission to use the names "JustHireMe",
 "Vasudev Siddh", "vasu-devs", or any related logos, branding, or marks except
 as needed to preserve attribution notices.
 
-5. Contributions
+7. Contributions
 
 Unless otherwise agreed in writing, contributions submitted to this repository
 are licensed under this same license.
 
-6. Warranty Disclaimer
+8. Warranty Disclaimer
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -56,7 +89,7 @@ OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE,
 ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
-7. Reservation of Rights
+9. Reservation of Rights
 
 All rights not expressly granted by this license are reserved by Vasudev Siddh
 and vasu-devs.
