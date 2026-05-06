@@ -562,9 +562,54 @@ p {
 .doc-lines i:nth-child(2) { width: 72%; }
 .doc-lines i:nth-child(3) { width: 52%; }
 
-.section { padding-block: clamp(54px, 8vw, 104px); border-bottom: 1px solid var(--line); }
-.paper-2 { background: var(--paper-2); }
-.paper-3 { background: var(--paper-3); }
+.section {
+  position: relative;
+  isolation: isolate;
+  padding-block: clamp(64px, 8vw, 112px);
+  border-bottom: 0;
+  overflow: hidden;
+}
+
+.section::before {
+  content: "";
+  position: absolute;
+  inset: 0 clamp(10px, 2vw, 28px);
+  z-index: -1;
+  border-top: 1px solid rgba(31, 26, 20, 0.06);
+  pointer-events: none;
+}
+
+.section::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -72px;
+  z-index: -1;
+  width: min(1180px, calc(100% - 36px));
+  height: 144px;
+  border-radius: 0 0 999px 999px;
+  background: rgba(255, 255, 255, 0.28);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.paper-2 {
+  background:
+    linear-gradient(180deg, rgba(244, 243, 238, 0.94) 0%, rgba(237, 235, 227, 0.96) 18%, rgba(237, 235, 227, 0.96) 82%, rgba(244, 243, 238, 0.68) 100%),
+    var(--paper-2);
+}
+
+.paper-3 {
+  background:
+    linear-gradient(180deg, rgba(237, 235, 227, 0.78) 0%, rgba(228, 225, 215, 0.96) 24%, rgba(228, 225, 215, 0.94) 78%, rgba(244, 243, 238, 0.74) 100%),
+    var(--paper-3);
+}
+
+.section:not(.paper-2):not(.paper-3):not(.final-cta) {
+  background:
+    linear-gradient(180deg, rgba(244, 243, 238, 0.8), rgba(255, 255, 255, 0.18) 28%, rgba(244, 243, 238, 0.86) 100%),
+    var(--paper);
+}
 .section-head { display: flex; flex-direction: column; gap: 14px; margin-bottom: 24px; }
 
 .workflow-asset {
@@ -580,7 +625,7 @@ p {
   background:
     linear-gradient(135deg, rgba(255,255,255,0.76), rgba(255,255,255,0.48)),
     var(--paper);
-  box-shadow: var(--shadow-sm);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.62) inset, 0 16px 40px rgba(31, 26, 20, 0.055);
 }
 
 .flow-chip {
@@ -673,7 +718,7 @@ p {
   padding: 18px;
   border: 1px solid rgba(31, 26, 20, 0.08);
   border-radius: 12px;
-  box-shadow: var(--shadow-sm);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.58) inset, 0 16px 34px rgba(31, 26, 20, 0.055);
 }
 
 .story-card h3 {
@@ -691,6 +736,12 @@ p {
 .intel-map {
   position: relative;
   min-height: 520px;
+  padding: 12px;
+  border: 1px solid rgba(31, 26, 20, 0.04);
+  border-radius: 22px;
+  background:
+    linear-gradient(135deg, rgba(255,255,255,0.32), rgba(255,255,255,0.12)),
+    rgba(244, 243, 238, 0.34);
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   grid-template-rows: repeat(3, minmax(130px, auto));
@@ -817,8 +868,9 @@ p {
 .final-cta { text-align: center; }
 .final-cta {
   background:
-    linear-gradient(135deg, rgba(220, 234, 212, 0.6), transparent 40%),
-    linear-gradient(315deg, rgba(252, 224, 200, 0.72), transparent 42%),
+    linear-gradient(180deg, rgba(228, 225, 215, 0.74) 0%, rgba(244, 243, 238, 0.92) 22%, rgba(244, 243, 238, 1) 100%),
+    linear-gradient(135deg, rgba(220, 234, 212, 0.54), transparent 42%),
+    linear-gradient(315deg, rgba(252, 224, 200, 0.64), transparent 44%),
     var(--paper);
 }
 .final-cta h2 { margin: 14px auto 0; }
