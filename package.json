@@ -2,6 +2,16 @@
   "name": "justhireme",
   "private": true,
   "version": "0.1.0",
+  "description": "Local-first AI job intelligence workbench for scraping, ranking, and tailoring applications.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vasu-devs/JustHireMe.git"
+  },
+  "bugs": {
+    "url": "https://github.com/vasu-devs/JustHireMe/issues"
+  },
+  "homepage": "https://github.com/vasu-devs/JustHireMe#readme",
   "type": "module",
   "scripts": {
     "dev": "vite",

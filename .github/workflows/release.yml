@@ -1,0 +1,143 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.13"
+  NODE_VERSION: "20"
+
+jobs:
+  build-backend:
+    name: Build backend sidecar (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: astral-sh/setup-uv@v3
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install backend dependencies
+        run: cd backend && uv sync --dev
+
+      - name: Build sidecar with PyInstaller
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          cd backend
+          uv run pyinstaller backend.spec --distpath ..\src-tauri\resources --noconfirm --clean
+          cd ..
+
+          $triple = (rustc -vV | Select-String "host:").ToString().Split()[1].Trim()
+          $src = "src-tauri\resources\backend\backend.exe"
+          $dst = "src-tauri\resources\backend\backend-$triple.exe"
+
+          if (-not (Test-Path $src)) {
+            throw "Expected sidecar was not created: $src"
+          }
+          Copy-Item $src $dst -Force
+          Write-Host "Sidecar ready: $dst"
+
+      - name: List sidecar output
+        shell: pwsh
+        run: |
+          Write-Host "Sidecar directory:"
+          Get-ChildItem -Path src-tauri\resources\backend\ -Recurse |
+            Select-Object FullName, Length |
+            Format-Table -AutoSize
+          $total = (Get-ChildItem -Path src-tauri\resources\backend\ -Recurse -File |
+            Measure-Object -Property Length -Sum).Sum / 1MB
+          Write-Host "Total size: $([math]::Round($total, 1)) MB"
+
+      - name: Upload backend sidecar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-sidecar-windows
+          path: src-tauri/resources/backend/
+          retention-days: 1
+
+  build-tauri:
+    name: Build Tauri installer (Windows)
+    needs: build-backend
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> target"
+
+      - name: Download backend sidecar
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-sidecar-windows
+          path: src-tauri/resources/backend/
+
+      - name: Verify sidecar exists
+        shell: pwsh
+        run: |
+          $triple = (rustc -vV | Select-String "host:").ToString().Split()[1].Trim()
+          $sidecar = "src-tauri\resources\backend\backend-$triple.exe"
+          $internal = "src-tauri\resources\backend\_internal"
+          if (-not (Test-Path $sidecar)) {
+            throw "Sidecar not found at $sidecar"
+          }
+          if (-not (Test-Path $internal)) {
+            throw "_internal directory not found; PyInstaller onedir bundle is incomplete"
+          }
+          $internalCount = (Get-ChildItem -Path $internal -Recurse -File).Count
+          Write-Host "Sidecar verified: $sidecar ($(( Get-Item $sidecar ).Length / 1MB) MB)"
+          Write-Host "_internal verified: $internalCount files"
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "JustHireMe ${{ github.ref_name }}"
+          releaseBody: |
+            ## JustHireMe ${{ github.ref_name }}
+
+            ### Installation
+            1. Download the `.msi` installer below.
+            2. Run the installer. Windows may show a SmartScreen warning; click "More info", then "Run anyway".
+            3. Launch JustHireMe from your Start Menu.
+            4. Follow the setup wizard to configure your API keys and profile.
+
+            > **Your data stays on your machine.** JustHireMe is local-first: no hosted backend, no tracking, and no app data leaves your computer by default.
+
+            ### What's inside
+            - Local-first job intelligence workbench
+            - Source adapters, quality gates, and transparent ranking
+            - Built-in CRM for your job pipeline
+            - Profile-aware graph and vector matching
+            - Resume, cover letter, and outreach draft generation
+
+            ---
+            _Having issues? [Open an issue](https://github.com/${{ github.repository }}/issues) or check the [README](https://github.com/${{ github.repository }}#readme)._
+          releaseDraft: true
+          prerelease: false

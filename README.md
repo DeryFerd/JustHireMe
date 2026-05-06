@@ -454,6 +454,7 @@ Start here:
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Community standards |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design |
 | [docs/source-adapters.md](docs/source-adapters.md) | Scraper adapter contract |
+| [docs/MAINTAINER_RELEASE_CHECKLIST.md](docs/MAINTAINER_RELEASE_CHECKLIST.md) | Release and safety checklist |
 | [ROADMAP.md](ROADMAP.md) | Project direction |
 | [SECURITY.md](SECURITY.md) | Privacy and responsible reporting |
 
