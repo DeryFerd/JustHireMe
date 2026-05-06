@@ -102,22 +102,22 @@ function formatCount(value) {
   return new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(value || 0);
 }
 
+function getVisitorId() {
+  const key = "justhireme.visitorId";
+  const existing = localStorage.getItem(key);
+  if (existing) return existing;
+
+  const next = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  localStorage.setItem(key, next);
+  return next;
+}
+
 function useViewCounter() {
   const [views, setViews] = React.useState(0);
   const [configured, setConfigured] = React.useState(false);
 
   React.useEffect(() => {
     let cancelled = false;
-
-    const getVisitorId = () => {
-      const key = "justhireme.visitorId";
-      const existing = localStorage.getItem(key);
-      if (existing) return existing;
-
-      const next = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      localStorage.setItem(key, next);
-      return next;
-    };
 
     const syncViews = async (method = "GET") => {
       const response = await fetch("/api/views", {
@@ -142,6 +142,35 @@ function useViewCounter() {
   }, []);
 
   return { views, configured };
+}
+
+function useDownloadCounter() {
+  const [downloads, setDownloads] = React.useState(0);
+  const [configured, setConfigured] = React.useState(false);
+
+  const syncDownloads = React.useCallback(async (method = "GET") => {
+    const response = await fetch("/api/downloads", {
+      method,
+      headers: { "content-type": "application/json" },
+      body: method === "POST" ? JSON.stringify({ visitorId: getVisitorId() }) : undefined,
+    });
+    const payload = await response.json();
+    if (typeof payload.total === "number") {
+      setDownloads(payload.total);
+      setConfigured(Boolean(payload.configured));
+    }
+    return payload;
+  }, []);
+
+  React.useEffect(() => {
+    syncDownloads("GET").catch(() => {});
+    const timer = window.setInterval(() => syncDownloads("GET").catch(() => {}), 15000);
+    return () => window.clearInterval(timer);
+  }, [syncDownloads]);
+
+  const trackDownload = React.useCallback(() => syncDownloads("POST"), [syncDownloads]);
+
+  return { downloads, configured, trackDownload };
 }
 
 function useGitHubStars() {
@@ -335,7 +364,16 @@ function MiniApp() {
 
 function App() {
   const { views, configured } = useViewCounter();
+  const { downloads, trackDownload } = useDownloadCounter();
   const github = useGitHubStars();
+  const installerUrl = "";
+
+  const handleDownload = React.useCallback(async () => {
+    await trackDownload().catch(() => {});
+    if (installerUrl) {
+      window.location.href = installerUrl;
+    }
+  }, [trackDownload, installerUrl]);
 
   return (
     <>
@@ -365,7 +403,7 @@ function App() {
               <span>Desktop-first</span>
             </div>
             <div className="hero-actions">
-              <button className="button primary" disabled title="Public installer is being prepared">
+              <button className="button primary" onClick={handleDownload} title="Public installer is being prepared">
                 <Icon name="download" />
                 Download soon
               </button>
@@ -387,6 +425,7 @@ function App() {
               {[
                 [github.stars == null ? "-" : formatCount(github.stars), "GitHub stars"],
                 [github.pullRequests == null ? "-" : formatCount(github.pullRequests), "open PRs"],
+                [formatCount(downloads), "downloaders"],
                 [formatCount(views), "unique views"],
               ].map(([value, label]) => (
                 <div key={label}>
@@ -473,8 +512,12 @@ function App() {
           <p>
             Open source today. One-click desktop installer next.
           </p>
+          <div className="download-proof">
+            <strong>{formatCount(downloads)}</strong>
+            <span>people waiting for the installer</span>
+          </div>
           <div className="hero-actions centered">
-            <button className="button primary" disabled><Icon name="download" /> Installer waiting</button>
+            <button className="button primary" onClick={handleDownload}><Icon name="download" /> Installer waiting</button>
             <a className="button secondary" href={repoUrl}><Icon name="github" /> View source</a>
           </div>
           <div className="creator-links" aria-label="Creator links">

@@ -1,12 +1,12 @@
 import { cleanId, json, redis, redisConfigured, redisPipeline, send } from "./_counter.js";
 
-const TOTAL_KEY = "justhireme:views:total";
-const UNIQUE_PREFIX = "justhireme:views:visitor:";
+const TOTAL_KEY = "justhireme:downloads:total";
+const UNIQUE_PREFIX = "justhireme:downloads:visitor:";
 
 export default async function handler(request, response) {
   try {
     const configured = redisConfigured();
-    const baseline = Number.parseInt(process.env.VIEW_COUNT_BASELINE || "0", 10);
+    const baseline = Number.parseInt(process.env.DOWNLOAD_COUNT_BASELINE || "0", 10);
 
     if (request.method === "GET") {
       const total = configured ? await redis(["GET", TOTAL_KEY]) : null;
@@ -48,8 +48,8 @@ export default async function handler(request, response) {
     }));
   } catch (error) {
     return send(response, json({
-      error: "View counter unavailable",
-      total: Number.parseInt(process.env.VIEW_COUNT_BASELINE || "0", 10),
+      error: "Download counter unavailable",
+      total: Number.parseInt(process.env.DOWNLOAD_COUNT_BASELINE || "0", 10),
     }, 500));
   }
 }
