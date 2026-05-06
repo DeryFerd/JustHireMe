@@ -91,6 +91,13 @@ const principles = [
   "Open source",
 ];
 
+const systemSignals = [
+  ["JD vectors", "purple"],
+  ["Profile graph", "green"],
+  ["Quality gate", "yellow"],
+  ["CRM memory", "blue"],
+];
+
 function formatCount(value) {
   return new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(value || 0);
 }
@@ -278,6 +285,11 @@ function MiniApp() {
           </div>
           <span className="score-ring">94</span>
         </div>
+        <div className="system-signals" aria-label="Matching signals">
+          {systemSignals.map(([label, tone]) => (
+            <span className={`tone-${tone}`} key={label}>{label}</span>
+          ))}
+        </div>
         <div className="preview-grid">
           {pipeline.map((item) => (
             <div className={`metric tone-${item.tone}`} key={item.status}>
@@ -348,8 +360,8 @@ function App() {
               A local-first workbench that turns noisy job hunting into a clear, reviewable pipeline.
             </p>
             <div className="proof-line">
+              <span>Semantic matching</span>
               <span>Built in public</span>
-              <span>Open source</span>
               <span>Desktop-first</span>
             </div>
             <div className="hero-actions">
@@ -374,7 +386,7 @@ function App() {
             <div className="metric-strip">
               {[
                 [github.stars == null ? "-" : formatCount(github.stars), "GitHub stars"],
-                [github.pullRequests == null ? "-" : formatCount(github.pullRequests), "pull requests"],
+                [github.pullRequests == null ? "-" : formatCount(github.pullRequests), "open PRs"],
                 [formatCount(views), "unique views"],
               ].map(([value, label]) => (
                 <div key={label}>
