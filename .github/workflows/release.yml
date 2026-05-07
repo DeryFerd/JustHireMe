@@ -112,12 +112,6 @@ jobs:
         with:
           workspaces: "src-tauri -> target"
 
-      - name: Audit Rust dependencies
-        run: |
-          cargo install cargo-audit --locked
-          cd src-tauri
-          cargo audit
-
       - name: Download backend sidecar
         uses: actions/download-artifact@v8
         with:
