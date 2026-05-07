@@ -596,3 +596,9 @@ Approved commercial use requires a separate written royalty agreement.
 This project is being built in the open because one person cannot cover every job source, every market, every ranking edge case, and every packaging path alone.
 
 The goal is a useful local tool and a welcoming codebase where contributors can add sources, improve ranking, and help job seekers get better signal with less noise.
+
+JustHireMe has started receiving encouraging traction, and I am grateful to everyone who has tried it, shared feedback, or contributed ideas. I built this project while actively looking for funded AI startups hiring for founder, founding engineer, or AI engineer roles where I can work deeply on applied AI products.
+
+If you or someone in your network is hiring for those kinds of roles, I would be happy to connect. You can reach me at [siddhvasudev1402@gmail.com](mailto:siddhvasudev1402@gmail.com), on X/Twitter at [@vasu_devs](https://twitter.com/vasu_devs), or through my portfolio at [vasudev.live](https://vasudev.live).
+
+I am also open to thoughtful sponsorship for JustHireMe as an open-source project. Sponsorship helps keep the project active, improve source coverage, maintain the local-first architecture, and support the work needed to make job search tooling more transparent and useful.
