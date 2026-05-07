@@ -38,10 +38,14 @@ export function OnboardingWizard({ api, onFinish, onOpenSettings }: { api: ApiFe
     else fd.append("raw", rawResume.trim());
     try {
       const r = await api(`/api/v1/ingest`, { method: "POST", body: fd });
-      if (!r.ok) throw new Error(`Resume import returned ${r.status}`);
+      if (!r.ok) {
+        const detail = await r.json().then(d => d.detail).catch(() => "");
+        throw new Error(detail || `Resume import returned ${r.status}`);
+      }
       setStep(1);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Resume import failed");
+      const message = e instanceof Error ? e.message : "Resume import failed";
+      setErr(message === "Failed to fetch" ? "Could not reach the local backend. Restart JustHireMe and try again." : message);
     } finally {
       setBusy(false);
     }

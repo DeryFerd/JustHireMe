@@ -551,6 +551,8 @@ app.add_middleware(
 
 @app.middleware("http")
 async def require_http_token(request: Request, call_next):
+    if request.method == "OPTIONS" or request.url.path == "/health":
+        return await call_next(request)
     if request.url.path != "/health":
         creds = await _bearer(request)
         if creds is None or creds.credentials != _API_TOKEN:
